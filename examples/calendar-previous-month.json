@@ -1,0 +1,12 @@
+{
+  "goal": "switch the calendar to the previous month",
+  "context": "Calendar app, month view, title reads September 2026",
+  "candidates": [
+    { "id": "btn_prev_month", "role": "button", "label": "previous month" },
+    { "id": "btn_next_month", "role": "button", "label": "next month" },
+    { "id": "btn_today", "role": "button", "label": "Today" },
+    { "id": "btn_add_event", "role": "button", "label": "Add Event" },
+    { "id": "btn_search", "role": "button", "label": "Search" },
+    { "id": "txt_month_title", "role": "text", "label": "September 2026" }
+  ]
+}
