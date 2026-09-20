@@ -132,14 +132,19 @@ unsure and the result must not be acted on. Raise it for higher-stakes
 selections via `--min-confidence`. Threshold application, answer normalization,
 and every error path are deterministic code, not model judgment.
 
-## Tests
+## Tests and CI
 
-Offline unit tests inject a fake decision dependency, so `npm test` never
-touches the network:
+Offline checks run deterministically with no network: `npm run lint` (ESLint),
+`npm run typecheck` (tsc with checkJs over the JSDoc types), and `npm test`,
+which injects a fake decision dependency so it never touches the API:
 
 ```sh
-npm test
+npm run lint && npm run typecheck && npm test
 ```
+
+`.github/workflows/ci.yml` runs exactly these three checks with a lockfile
+install (`npm ci`) on Node 20 and 22. CI never runs the real Jev API smoke and
+needs no secrets.
 
 One real smoke invocation against the live API (uses the environment key,
 prints only the model's decision, no secrets):

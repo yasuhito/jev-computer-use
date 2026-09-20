@@ -17,6 +17,13 @@ export const LIMITS = {
   role: 40,
 };
 
+/**
+ * @typedef {object} Candidate
+ * @property {string} id
+ * @property {string|null} role
+ * @property {string} label
+ */
+
 export class ValidationError extends Error {
   /**
    * @param {string} message
@@ -30,10 +37,18 @@ export class ValidationError extends Error {
 }
 
 /** Collapse whitespace and cap length; UI labels are data, not formatting. */
+/**
+ * @param {string} text
+ * @param {number} [max]
+ */
 export function sanitizeLabel(text, max = LIMITS.label) {
   return String(text).replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
 export function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

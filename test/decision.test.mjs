@@ -15,14 +15,20 @@ const BASE_REQUEST = {
   ],
 };
 
+/**
+ * @param {string} stdinText
+ * @param {string[]} [argv]
+ */
 function captureIo(stdinText, argv = []) {
+  /** @type {string[]} */
   const out = [];
+  /** @type {string[]} */
   const err = [];
   return {
     argv,
     stdin: Readable.from([stdinText]),
-    stdout: { write: (c) => out.push(c) },
-    stderr: { write: (c) => err.push(c) },
+    stdout: { write: (/** @type {string} */ c) => out.push(c) },
+    stderr: { write: (/** @type {string} */ c) => err.push(c) },
     env: {},
     out,
     err,
@@ -30,6 +36,10 @@ function captureIo(stdinText, argv = []) {
   };
 }
 
+/**
+ * @param {Record<string, unknown>} answers
+ * @param {string} [model]
+ */
 function fakeDecide(answers, model = "jev-fake") {
   return async () => ({
     model,
@@ -64,7 +74,7 @@ test("validateRequest rejects empty goal, non-object request, and missing candid
 
 test("validateRequest rejects too many candidates and validates maxCandidates bound", () => {
   const many = Array.from({ length: 41 }, (_, i) => ({ label: `item ${i}` }));
-  assert.throws(() => validateRequest({ goal: "g", candidates: many }), (err) => {
+  assert.throws(() => validateRequest({ goal: "g", candidates: many }), (/** @type {ValidationError} */ err) => {
     assert.equal(err.code, "too_many_candidates");
     return true;
   });
@@ -77,14 +87,14 @@ test("validateRequest rejects too many candidates and validates maxCandidates bo
 test("validateRequest rejects duplicate ids and the reserved no_match id", () => {
   assert.throws(
     () => validateRequest({ goal: "g", candidates: [{ id: "a", label: "A" }, { id: "a", label: "B" }] }),
-    (err) => {
+    (/** @type {ValidationError} */ err) => {
       assert.equal(err.code, "duplicate_id");
       return true;
     },
   );
   assert.throws(
     () => validateRequest({ goal: "g", candidates: [{ id: NO_MATCH, label: "A" }] }),
-    (err) => {
+    (/** @type {ValidationError} */ err) => {
       assert.equal(err.code, "reserved_id");
       return true;
     },
@@ -96,11 +106,11 @@ test("validateRequest rejects malformed ids, labels, roles, and unknown fields",
   assert.throws(() => validateRequest({ goal: "g", candidates: [{ label: "" }] }), ValidationError);
   assert.throws(() => validateRequest({ goal: "g", candidates: [{ label: 42 }] }), ValidationError);
   assert.throws(() => validateRequest({ goal: "g", candidates: [{ label: "A", role: 7 }] }), ValidationError);
-  assert.throws(() => validateRequest({ goal: "g", extra: true, candidates: [{ label: "A" }] }), (err) => {
+  assert.throws(() => validateRequest({ goal: "g", extra: true, candidates: [{ label: "A" }] }), (/** @type {ValidationError} */ err) => {
     assert.equal(err.code, "unknown_field");
     return true;
   });
-  assert.throws(() => validateRequest({ goal: "g", candidates: [{ label: "A", text: "x" }] }), (err) => {
+  assert.throws(() => validateRequest({ goal: "g", candidates: [{ label: "A", text: "x" }] }), (/** @type {ValidationError} */ err) => {
     assert.equal(err.code, "unknown_field");
     return true;
   });
@@ -118,8 +128,13 @@ test("buildRequest offers every candidate id plus no_match and carries the goal"
   const request = validateRequest(BASE_REQUEST);
   const { state, questions } = buildRequest(request);
   const q = questions[DECISION_QUESTION_ID];
+  if (!q || typeof q.instructions !== "object" || q.instructions === null || Array.isArray(q.instructions)) {
+    assert.fail("expected a choice question with structured instructions");
+  }
   assert.equal(q.type, "choice");
-  assert.ok(q.instructions.question.includes("previous month"));
+  const questionText = q.instructions.question;
+  assert.equal(typeof questionText, "string");
+  assert.ok(/** @type {string} */ (questionText).includes("previous month"));
   assert.equal(Object.keys(q.criteria).length, 4);
   assert.ok(NO_MATCH in q.criteria);
   assert.ok("btn_prev_month" in q.criteria);
@@ -176,6 +191,7 @@ test("policy: high-confidence selection passes", () => {
   const n = normalizeAnswer({ choice: "btn_prev_month", confidence: 0.9 }, ["btn_prev_month"]);
   const v = applyPolicy(n, request.candidates, 0.5);
   assert.equal(v.status, "selected");
+  assert.ok(v.candidate);
   assert.equal(v.candidate.id, "btn_prev_month");
   assert.equal(v.reason, null);
 });
@@ -185,7 +201,9 @@ test("policy: confidence below threshold escalates and keeps the tentative candi
   const n = normalizeAnswer({ choice: "btn_prev_month", confidence: 0.3 }, ["btn_prev_month"]);
   const v = applyPolicy(n, request.candidates, 0.5);
   assert.equal(v.status, "escalate");
+  assert.ok(v.candidate);
   assert.equal(v.candidate.id, "btn_prev_month");
+  assert.ok(v.reason);
   assert.match(v.reason, /below the threshold/);
 });
 
@@ -202,6 +220,7 @@ test("policy: low-confidence no_match escalates rather than reporting no_match",
   const n = normalizeAnswer({ choice: NO_MATCH, confidence: 0.2 }, ["btn_prev_month"]);
   const v = applyPolicy(n, request.candidates, 0.5);
   assert.equal(v.status, "escalate");
+  assert.ok(v.reason);
   assert.match(v.reason, /below the threshold/);
 });
 
@@ -212,6 +231,7 @@ test("policy: unknown choice or missing confidence escalates", () => {
   const noConf = normalizeAnswer({ choice: "btn_prev_month" }, ["btn_prev_month"]);
   const v = applyPolicy(noConf, request.candidates, 0.5);
   assert.equal(v.status, "escalate");
+  assert.ok(v.reason);
   assert.match(v.reason, /confidence/);
 });
 
@@ -248,6 +268,7 @@ test("runCli escalates below the threshold and honors --min-confidence", async (
   const payload = io.text();
   assert.equal(payload.status, "escalate");
   assert.equal(payload.threshold, 0.9);
+  assert.ok(payload.candidate);
   assert.equal(payload.candidate.id, "btn_prev_month");
 });
 
@@ -326,13 +347,15 @@ test("runCli reads --input from a file", async (t) => {
 });
 
 test("runCli exits 2 when stdin is a TTY with no --input", async () => {
+  /** @type {string[]} */
   const out = [];
+  /** @type {string[]} */
   const err = [];
   const code = await runCli({
     argv: [],
     stdin: { isTTY: true },
-    stdout: { write: (c) => out.push(c) },
-    stderr: { write: (c) => err.push(c) },
+    stdout: { write: (/** @type {string} */ c) => out.push(c) },
+    stderr: { write: (/** @type {string} */ c) => err.push(c) },
     env: {},
   });
   assert.equal(code, 2);
@@ -349,18 +372,19 @@ test("runCli --help prints usage to stderr and exits 0 without deciding", async 
 });
 
 test("runCli forwards --model to the decision dependency", async () => {
+  /** @type {object[]} */
   const seen = [];
   const io = captureIo(JSON.stringify(BASE_REQUEST));
   const code = await runCli({
     ...io,
     argv: ["--model", "jev-latest"],
-    decide: async (req) => {
+    decide: async (/** @type {object} */ req) => {
       seen.push(req);
       return { model: "jev-1.13.0", answers: { element: { choice: NO_MATCH, confidence: 1, probabilities: {} } } };
     },
   });
   assert.equal(code, 0);
-  assert.equal(seen[0].model, "jev-latest");
+  assert.equal(/** @type {Record<string, unknown>|undefined} */ (seen[0])?.model, "jev-latest");
 });
 
 test("parseArgs accepts = forms and rejects unknown flags and bad values", () => {

@@ -51,6 +51,7 @@ Exit codes: 0 selected/no_match/escalate, 1 runtime error, 2 usage error.`;
  * @throws {Error} on unknown or malformed options (usage error)
  */
 export function parseArgs(argv) {
+  /** @type {{input: string|null, minConfidence: number, maxCandidates: number, model: string|null, help: boolean}} */
   const options = {
     input: null,
     minConfidence: DEFAULT_MIN_CONFIDENCE,
@@ -60,6 +61,7 @@ export function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    if (arg === undefined) break;
     if (arg === "--help" || arg === "-h") {
       options.help = true;
       continue;
@@ -106,21 +108,34 @@ export function parseArgs(argv) {
   return options;
 }
 
+/**
+ * @param {string} code
+ * @param {string} message
+ */
 function errorPayload(code, message) {
   return { tool: TOOL, version: VERSION, status: "error", error: { code, message } };
 }
 
+/**
+ * @param {AsyncIterable<Buffer | string>} stream
+ * @returns {Promise<string>}
+ */
 async function readAll(stream) {
+  /** @type {Buffer[]} */
   const chunks = [];
-  for await (const chunk of stream) chunks.push(chunk);
-  return Buffer.concat(chunks.map((c) => Buffer.isBuffer(c) ? c : Buffer.from(String(c)))).toString("utf8");
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
+
+/** @typedef {{write: (chunk: string) => unknown}} WritableLike */
 
 /**
  * Run the CLI. All I/O and the decision dependency are injectable so tests run
  * offline. Returns the process exit code.
  *
- * @param {{argv?: string[], stdin?: object, stdout?: object, stderr?: object, env?: NodeJS.ProcessEnv, decide?: (request: object) => Promise<object>}} [io]
+ * @param {{argv?: string[], stdin?: object, stdout?: WritableLike, stderr?: WritableLike, env?: NodeJS.ProcessEnv, decide?: import("../src/decide.mjs").DecideFn | null}} [io]
  * @returns {Promise<number>}
  */
 export async function runCli({
@@ -131,6 +146,7 @@ export async function runCli({
   env = process.env,
   decide = null,
 } = {}) {
+  /** @param {object} payload */
   const writeOut = (payload) => stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   try {
     const options = parseArgs(argv);
@@ -143,19 +159,20 @@ export async function runCli({
     if (options.input !== null) {
       const { readFile } = await import("node:fs/promises");
       rawText = await readFile(options.input, "utf8");
-    } else if (stdin.isTTY) {
+    } else if (/** @type {{isTTY?: boolean}} */ (stdin).isTTY) {
       stderr.write(`${USAGE}\n`);
       writeOut(errorPayload("usage", "no input: pass JSON on stdin or use --input FILE"));
       return 2;
     } else {
-      rawText = await readAll(stdin);
+      rawText = await readAll(/** @type {AsyncIterable<Buffer | string>} */ (stdin));
     }
 
     let raw;
     try {
       raw = JSON.parse(rawText);
     } catch (err) {
-      writeOut(errorPayload("invalid_json", `request is not valid JSON: ${err.message}`));
+      const message = err instanceof Error ? err.message : String(err);
+      writeOut(errorPayload("invalid_json", `request is not valid JSON: ${message}`));
       return 2;
     }
 
@@ -171,8 +188,13 @@ export async function runCli({
     }
 
     const decideFn = decide ?? createTypesafeDecide({ env });
+    const modelOverride = options.model;
+    /** @type {import("../src/decide.mjs").DecideFn} */
+    const decided = modelOverride
+      ? (requestPayload) => decideFn({ ...requestPayload, model: modelOverride })
+      : decideFn;
     const { model, normalized, usage } = await runDecision(buildRequest(request), {
-      decide: options.model ? (req) => decideFn({ ...req, model: options.model }) : decideFn,
+      decide: decided,
     });
     const verdict = applyPolicy(normalized, request.candidates, options.minConfidence);
 
@@ -198,15 +220,21 @@ export async function runCli({
       writeOut(errorPayload(err.code, err.message));
       return 2;
     }
-    const code = err?.code === "missing_key" ? "missing_key" : "api";
-    if (code !== "missing_key") stderr.write(`${TOOL}: ${err?.message ?? String(err)}\n`);
-    writeOut(errorPayload(code, err?.message ?? String(err)));
+    const message = err instanceof Error ? err.message : String(err);
+    const code = err instanceof Error && /** @type {{code?: string}} */ (err).code === "missing_key"
+      ? "missing_key"
+      : "api";
+    if (code !== "missing_key") stderr.write(`${TOOL}: ${message}\n`);
+    writeOut(errorPayload(code, message));
     return 1;
   }
 }
 
-const isMain =
-  typeof process !== "undefined" && process.argv?.[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isMain = (() => {
+  if (typeof process === "undefined") return false;
+  const scriptArg = process.argv[1];
+  return scriptArg !== undefined && import.meta.url === pathToFileURL(scriptArg).href;
+})();
 if (isMain) {
   runCli({ argv: process.argv.slice(2) }).then(
     (code) => {

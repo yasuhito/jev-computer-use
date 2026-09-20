@@ -13,12 +13,20 @@ import { NO_MATCH } from "./validate.mjs";
 export const DEFAULT_MIN_CONFIDENCE = 0.5;
 
 /**
+ * @typedef {object} NormalizedAnswer
+ * @property {string|null} choice
+ * @property {number|null} confidence
+ * @property {object} probabilities
+ * @property {boolean} usable
+ */
+
+/**
  * Apply the confidence policy to a normalized answer.
  *
- * @param {{choice: string|null, confidence: number|null, probabilities: object, usable: boolean}} normalized
- * @param {Array<{id: string, role: string|null, label: string}>} candidates
+ * @param {NormalizedAnswer} normalized
+ * @param {import("./validate.mjs").Candidate[]} candidates
  * @param {number} [threshold]
- * @returns {{status: "selected"|"no_match"|"escalate", candidate: {id: string, role: string|null, label: string}|null, reason: string|null}}
+ * @returns {{status: "selected"|"no_match"|"escalate", candidate: import("./validate.mjs").Candidate|null, reason: string|null}}
  */
 export function applyPolicy(normalized, candidates, threshold = DEFAULT_MIN_CONFIDENCE) {
   if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
@@ -26,22 +34,23 @@ export function applyPolicy(normalized, candidates, threshold = DEFAULT_MIN_CONF
   }
   const byId = new Map(candidates.map((c) => [c.id, c]));
   const candidate = normalized.choice !== null ? byId.get(normalized.choice) ?? null : null;
+  const { choice, confidence } = normalized;
 
-  if (!normalized.usable) {
+  if (!normalized.usable || choice === null || confidence === null) {
     const why =
-      normalized.choice === null
+      choice === null
         ? "Jev returned an unknown or missing choice id"
         : "Jev returned missing or out-of-range confidence";
     return { status: "escalate", candidate, reason: why };
   }
-  if (normalized.confidence < threshold) {
+  if (confidence < threshold) {
     return {
       status: "escalate",
       candidate,
-      reason: `confidence ${normalized.confidence.toFixed(2)} is below the threshold ${threshold.toFixed(2)}`,
+      reason: `confidence ${confidence.toFixed(2)} is below the threshold ${threshold.toFixed(2)}`,
     };
   }
-  if (normalized.choice === NO_MATCH) {
+  if (choice === NO_MATCH) {
     return { status: "no_match", candidate: null, reason: null };
   }
   return { status: "selected", candidate, reason: null };

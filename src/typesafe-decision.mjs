@@ -20,7 +20,7 @@ export class MissingKeyError extends Error {
  * Create the decide implementation used when the caller does not inject one.
  *
  * @param {{env?: NodeJS.ProcessEnv}} [options]
- * @returns {(request: {state: object, questions: object}) => Promise<{model?: string, answers: object, usage?: object}>}
+ * @returns {import("./decide.mjs").DecideFn}
  * @throws {MissingKeyError} when TYPESAFE_API_KEY is not set
  */
 export function createTypesafeDecide({ env = process.env } = {}) {
@@ -29,6 +29,7 @@ export function createTypesafeDecide({ env = process.env } = {}) {
     throw new MissingKeyError();
   }
   const client = new TypeSafeClient({ apiKey });
+  /** @type {import("./decide.mjs").DecideFn} */
   return async function decide(request) {
     const response = await client.systemOne(request);
     return { model: response.model, answers: response.answers, usage: response.usage };
