@@ -3,7 +3,7 @@
  * result set out. Everything above this module (query text, bindings, row
  * typing, report arithmetic) is deterministic code that never needs a
  * credential; everything below it (the SQL REST API client) is swappable for
- * the fixture executor in tests and dry-runs.
+ * the fixture executor in tests.
  *
  * Result sets keep the Snowflake SQL API encoding: every cell is a string
  * (or null), and `columns[i].type` says how to decode it. `decodeCell`

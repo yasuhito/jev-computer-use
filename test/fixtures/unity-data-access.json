@@ -1,5 +1,5 @@
 {
-  "_note": "Recorded in Snowflake SQL API encoding (every cell a string or null; DATE = days since 1970-01-01; FIXED = integer string). Columns follow the official Unity Analytics Data Access view reference. Synthetic values; not a real account. Use with --now 2026-09-21T09:00:00Z (window 2026-09-07..2026-09-20, report date 2026-09-20).",
+  "_note": "Recorded in Snowflake SQL API encoding (every cell a string or null; DATE = days since 1970-01-01; FIXED = integer string). Columns follow the official Unity Analytics Data Access view reference. Synthetic values; not a real account. Tests inject a fixed clock of 2026-09-21T09:00:00Z (window 2026-09-07..2026-09-20, report date 2026-09-20).",
   "results": {
     "account_games": {
       "_note": "Response to ACCOUNT_GAMES WHERE GAME_NAME = 'QA2': one row per environment.",
