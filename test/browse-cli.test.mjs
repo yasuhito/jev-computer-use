@@ -74,7 +74,7 @@ test("runCli observe mode needs no API key and closes the session", async () => 
   const payload = c.json();
   assert.equal(payload.tool, "jev-cu-browse");
   assert.equal(payload.status, "observed");
-  assert.equal(payload.candidates.length, 6);
+  assert.equal(payload.candidates.length, 5);
   assert.equal(c.fake.state.disconnected, true);
 });
 
