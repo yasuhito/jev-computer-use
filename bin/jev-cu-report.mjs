@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * jev-cu-report: the QA2 daily New Users report. Reads Unity Analytics Data
- * Access through the read-only Snowflake boundary (or a recorded fixture),
+ * Access through the read-only Snowflake boundary,
  * builds the typed report and the exact Slack text deterministically, and
  * by default stops there (dry-run). Only `--mode send` hands the text to
  * the bounded jev-cu-browse workflow, and only for a destination that is
@@ -20,7 +20,7 @@ import { CdpAdapter } from "../src/cdp/adapter.mjs";
 import { DEFAULT_CDP_ENDPOINT, listPageTargets, selectPageTarget, connectPageSession } from "../src/cdp/transport.mjs";
 import { PROFILES, DEFAULT_PROFILE_NAME } from "../src/profiles/index.mjs";
 import { DEFAULT_BROWSE_MIN_CONFIDENCE, runWorkflow, validateMessageText, validateDestination } from "../src/workflow.mjs";
-import { SnowflakeError, loadFixtureExecutor } from "../src/snowflake/executor.mjs";
+import { SnowflakeError } from "../src/snowflake/executor.mjs";
 import { createSqlApiExecutor, MissingSnowflakeConfigError } from "../src/snowflake/sql-api.mjs";
 import {
   DataAccessError,
@@ -38,14 +38,9 @@ const VERSION = "0.1.0";
 
 export const REPORT_MODES = Object.freeze(["dry-run", "send"]);
 /** @typedef {"dry-run"|"send"} ReportMode */
-export const SOURCES = Object.freeze(["snowflake", "fixture"]);
-
 const VALUE_FLAGS = new Set([
-  "--source",
-  "--fixture",
   "--days",
   "--series-days",
-  "--now",
   "--mode",
   "--destination",
   "--allow-destination",
@@ -65,11 +60,8 @@ default and touches no browser. --mode send posts through jev-cu-browse's
 bounded workflow, only to a destination named in --allow-destination.
 
 Data options:
-  --source KIND         ${SOURCES.join(" | ")} (default snowflake; snowflake reads SNOWFLAKE_* from the environment)
-  --fixture FILE        recorded result sets for --source fixture
   --days N              complete UTC days in the window, ${MIN_WINDOW_DAYS}..${MAX_WINDOW_DAYS} (default ${DEFAULT_WINDOW_DAYS})
   --series-days N       days shown in the message series, 1..days (default ${DEFAULT_SERIES_DAYS})
-  --now ISO             freeze the clock (the current UTC day is always excluded)
 
 Delivery options:
   --mode MODE           ${REPORT_MODES.join(" | ")} (default dry-run)
@@ -86,17 +78,14 @@ Delivery options:
 
 Environment: SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PRIVATE_KEY_PATH,
   SNOWFLAKE_WAREHOUSE, SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA (required for
-  --source snowflake; optional SNOWFLAKE_ROLE, SNOWFLAKE_PRIVATE_KEY_PASSPHRASE,
+  optional SNOWFLAKE_ROLE, SNOWFLAKE_PRIVATE_KEY_PASSPHRASE,
   SNOWFLAKE_HOST); TYPESAFE_API_KEY (send only). Never printed or stored.
 Exit codes: 0 outcome, 1 runtime error, 2 usage error.`;
 
 /**
  * @typedef {object} Options
- * @property {"snowflake"|"fixture"} source
- * @property {string|null} fixture
  * @property {number} days
  * @property {number} seriesDays
- * @property {number|null} now
  * @property {ReportMode} mode
  * @property {string|null} destination
  * @property {string[]} allowDestinations
@@ -117,11 +106,8 @@ Exit codes: 0 outcome, 1 runtime error, 2 usage error.`;
 export function parseArgs(argv) {
   /** @type {Options} */
   const options = {
-    source: "snowflake",
-    fixture: null,
     days: DEFAULT_WINDOW_DAYS,
     seriesDays: DEFAULT_SERIES_DAYS,
-    now: null,
     mode: "dry-run",
     destination: null,
     allowDestinations: [],
@@ -163,27 +149,12 @@ export function parseArgs(argv) {
       i += 1;
     }
     switch (flag) {
-      case "--source":
-        if (!SOURCES.includes(inline)) throw new Error(`--source must be one of ${SOURCES.join(", ")}, got "${inline}"`);
-        options.source = /** @type {"snowflake"|"fixture"} */ (inline);
-        break;
-      case "--fixture":
-        options.fixture = inline;
-        break;
       case "--days":
         options.days = integer(flag, inline, MIN_WINDOW_DAYS, MAX_WINDOW_DAYS);
         break;
       case "--series-days":
         options.seriesDays = integer(flag, inline, 1, MAX_WINDOW_DAYS);
         break;
-      case "--now": {
-        const ms = Date.parse(inline);
-        if (!Number.isFinite(ms) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(inline)) {
-          throw new Error(`--now must be an ISO-8601 instant with a zone, e.g. 2026-09-21T09:00:00Z, got "${inline}"`);
-        }
-        options.now = ms;
-        break;
-      }
       case "--mode":
         if (!REPORT_MODES.includes(inline)) throw new Error(`--mode must be one of ${REPORT_MODES.join(", ")}, got "${inline}"`);
         options.mode = /** @type {ReportMode} */ (inline);
@@ -218,8 +189,6 @@ export function parseArgs(argv) {
         break;
     }
   }
-  if (options.source === "fixture" && options.fixture === null) throw new Error("--source fixture requires --fixture FILE");
-  if (options.source === "snowflake" && options.fixture !== null) throw new Error("--fixture is only valid with --source fixture");
   if (options.seriesDays > options.days) throw new Error(`--series-days (${options.seriesDays}) may not exceed --days (${options.days})`);
   if (options.mode !== "dry-run") {
     if (options.destination === null) throw new Error(`--mode ${options.mode} requires --destination`);
@@ -319,13 +288,9 @@ export async function runCli({
       decideFn = modelOverride ? (payload) => base({ ...payload, model: modelOverride }) : base;
     }
 
-    const source =
-      executor ??
-      (options.source === "fixture"
-        ? await loadFixtureExecutor(/** @type {string} */ (options.fixture))
-        : createSqlApiExecutor({ env, now, ...(sleep ? { sleep } : {}) }));
+    const source = executor ?? createSqlApiExecutor({ env, now, ...(sleep ? { sleep } : {}) });
 
-    const clock = options.now ?? now();
+    const clock = now();
     const window = completeUtcWindow(clock, options.days);
     const game = await resolveGameEnvironment(source, { gameName, environmentName });
     const rows = await fetchNewUsersByStartDate(source, { gameId: game.gameId, environmentId: game.environmentId, start: window.start, end: window.end });

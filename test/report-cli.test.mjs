@@ -7,7 +7,6 @@ import { decideByLabel, fakeClock } from "./helpers.mjs";
 import { loadFixtureExecutor } from "../src/snowflake/executor.mjs";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/unity-data-access.json", import.meta.url));
-const FIXTURE_ARGS = ["--source", "fixture", "--fixture", FIXTURE, "--now", "2026-09-21T09:00:00Z"];
 const KEY = "unity-new-users:24601:31001:2026-09-20";
 const SEND_FLOW = [/^qa2-metrics/, /^Message #qa2-metrics/, /^Send now/];
 
@@ -22,6 +21,7 @@ function captureIo(argv, overrides = {}) {
   const err = [];
   const fake = createFakeCdp();
   const clock = fakeClock();
+  clock.advance(Date.parse("2026-09-21T09:00:00Z") - clock.now());
   return {
     io: {
       argv,
@@ -41,21 +41,25 @@ function captureIo(argv, overrides = {}) {
   };
 }
 
+/**
+ * @param {string[]} argv
+ * @param {Partial<Parameters<typeof runCli>[0]>} [overrides]
+ */
+async function captureFixtureIo(argv, overrides = {}) {
+  return captureIo(argv, { executor: await loadFixtureExecutor(FIXTURE), ...overrides });
+}
+
 test("parseArgs defaults to a snowflake dry-run and validates every flag", () => {
   const o = parseArgs([]);
-  assert.equal(o.source, "snowflake");
   assert.equal(o.mode, "dry-run");
   assert.equal(o.days, 14);
   assert.equal(o.seriesDays, 7);
-  assert.equal(o.now, null);
-  assert.equal(parseArgs(["--now", "2026-09-21T09:00:00Z"]).now, Date.parse("2026-09-21T09:00:00Z"));
   assert.deepEqual(parseArgs(["--mode", "send", "--destination", "a", "--allow-destination", "a", "--allow-destination", "b"]).allowDestinations, ["a", "b"]);
-  assert.throws(() => parseArgs(["--source", "fixture"]), /requires --fixture/);
-  assert.throws(() => parseArgs(["--fixture", "x.json"]), /only valid with --source fixture/);
+  assert.throws(() => parseArgs(["--source", "fixture"]), /unknown option/);
+  assert.throws(() => parseArgs(["--fixture", "x.json"]), /unknown option/);
   assert.throws(() => parseArgs(["--days", "7"]), /8\.\.90/);
   assert.throws(() => parseArgs(["--days", "8", "--series-days", "9"]), /may not exceed/);
-  assert.throws(() => parseArgs(["--now", "2026-09-21"]), /ISO-8601 instant/);
-  assert.throws(() => parseArgs(["--now", "2026-09-21T09:00:00"]), /ISO-8601 instant/);
+  assert.throws(() => parseArgs(["--now", "2026-09-21T09:00:00Z"]), /unknown option/);
   assert.throws(() => parseArgs(["--mode", "send", "--destination", "a"]), /requires at least one --allow-destination/);
   assert.throws(() => parseArgs(["--mode", "send", "--allow-destination", "a"]), /requires --destination/);
   assert.throws(() => parseArgs(["--mode", "observe"]), /--mode must be one of/);
@@ -80,7 +84,7 @@ test("the destination allowlist is exact", () => {
 
 test("dry-run against the fixture prints the typed report and the exact message, touching no browser", async () => {
   let connected = false;
-  const c = captureIo(FIXTURE_ARGS, {
+  const c = await captureFixtureIo([], {
     connect: async () => {
       connected = true;
       throw new Error("must not connect");
@@ -105,16 +109,16 @@ test("dry-run against the fixture prints the typed report and the exact message,
 });
 
 test("dry-run needs neither TYPESAFE_API_KEY nor a browser, and accepts a destination only when allowlisted", async () => {
-  const ok = captureIo([...FIXTURE_ARGS, "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"]);
+  const ok = await captureFixtureIo(["--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"]);
   assert.equal(await runCli(ok.io), 0);
   assert.equal(ok.json().delivery.destination, "qa2-metrics");
-  const bad = captureIo([...FIXTURE_ARGS, "--destination", "general", "--allow-destination", "qa2-metrics"]);
+  const bad = await captureFixtureIo(["--destination", "general", "--allow-destination", "qa2-metrics"]);
   assert.equal(await runCli(bad.io), 2);
   assert.equal(bad.json().error.code, "destination_not_allowed");
 });
 
 test("the snowflake source without configuration fails with exit 1 and no value echo", async () => {
-  const c = captureIo(["--now", "2026-09-21T09:00:00Z"], { env: { SNOWFLAKE_ACCOUNT: "acct" } });
+  const c = captureIo([], { env: { SNOWFLAKE_ACCOUNT: "acct" } });
   assert.equal(await runCli(c.io), 1);
   assert.equal(c.json().error.code, "missing_snowflake_config");
   assert.match(c.json().error.message, /SNOWFLAKE_USER/);
@@ -126,7 +130,7 @@ test("send mode without TYPESAFE_API_KEY exits 1 before any query or connection"
   let queried = 0;
   const executor = { kind: "probe", execute: async () => ((queried += 1), { columns: [], rows: [] }) };
   let connected = false;
-  const c = captureIo([...FIXTURE_ARGS, "--mode", "send", "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"], {
+  const c = captureIo(["--mode", "send", "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"], {
     executor,
     connect: async () => {
       connected = true;
@@ -141,14 +145,14 @@ test("send mode without TYPESAFE_API_KEY exits 1 before any query or connection"
 
 test("data conditions map to exit 1 with the data-access code", async () => {
   const empty = { kind: "probe", execute: async () => ({ columns: [{ name: "GAME_NAME", type: "TEXT" }], rows: [] }) };
-  const c = captureIo(FIXTURE_ARGS, { executor: empty });
+  const c = captureIo([], { executor: empty });
   assert.equal(await runCli(c.io), 1);
   assert.equal(c.json().error.code, "game_not_found");
 });
 
 test("send mode posts the exact rendered message through the bounded workflow and verifies it", async () => {
   const executor = await loadFixtureExecutor(FIXTURE);
-  const c = captureIo([...FIXTURE_ARGS, "--mode", "send", "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"], {
+  const c = captureIo(["--mode", "send", "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"], {
     executor,
     decide: decideByLabel(SEND_FLOW),
   });
@@ -166,7 +170,7 @@ test("send mode posts the exact rendered message through the bounded workflow an
 });
 
 test("send mode refuses a second post for the same report day without touching the composer", async () => {
-  const c = captureIo([...FIXTURE_ARGS, "--mode", "send", "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"], {
+  const c = await captureFixtureIo(["--mode", "send", "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"], {
     decide: decideByLabel(SEND_FLOW),
   });
   c.fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", [`QA2 new users (production) for 2026-09-20 (UTC)\n... key: ${KEY}`]);
@@ -182,7 +186,7 @@ test("send mode refuses a second post for the same report day without touching t
 test("send mode refuses when the chosen destination is not named exactly as requested", async () => {
   // Jev picks "qa2-metrics (channel)" for a prefix of it; code refuses because
   // "qa2-metric" is not the link's leading name.
-  const c = captureIo([...FIXTURE_ARGS, "--mode", "send", "--destination", "qa2-metric", "--allow-destination", "qa2-metric"], {
+  const c = await captureFixtureIo(["--mode", "send", "--destination", "qa2-metric", "--allow-destination", "qa2-metric"], {
     decide: decideByLabel(SEND_FLOW),
   });
   assert.equal(await runCli(c.io), 0);

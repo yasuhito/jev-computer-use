@@ -386,7 +386,7 @@ or several rows at any step is an error
 
 ### Definitions
 
-All dates are UTC calendar days. With `now` (the real clock or `--now`):
+All dates are UTC calendar days. With the current clock:
 
 - **window**: the `--days` (default 14, at least 8) complete UTC days before
   today, `[today - days, today)`. The current UTC day is always excluded
@@ -459,15 +459,9 @@ warehouse determine it, and none of them is created or changed by this code.
 
 ### Usage
 
-Dry-run (default) against the recorded fixture. Prints the typed report and
-the exact message; needs no credential, no key, and no browser:
-
-```sh
-node bin/jev-cu-report.mjs --source fixture --fixture test/fixtures/unity-data-access.json \
-  --now 2026-09-21T09:00:00Z
-```
-
-Dry-run against Snowflake (SNOWFLAKE_* in the environment; SELECT only):
+Dry-run against Snowflake (SNOWFLAKE_* in the environment; SELECT only). It
+prints the typed report and exact message without needing a TypeSafe key or
+browser:
 
 ```sh
 node bin/jev-cu-report.mjs
@@ -489,11 +483,8 @@ Options:
 
 | Option | Meaning | Default |
 | --- | --- | --- |
-| `--source KIND` | `snowflake` or `fixture` | `snowflake` |
-| `--fixture FILE` | recorded result sets (with `--source fixture`) | |
 | `--days N` | complete UTC days in the window, 8..90 | `14` |
 | `--series-days N` | days shown in the message series, 1..days | `7` |
-| `--now ISO` | freeze the clock (ISO-8601 instant with zone) | real time |
 | `--mode MODE` | `dry-run`, `send` | `dry-run` |
 | `--destination NAME` | Slack channel, exactly as the sidebar names it | required for send |
 | `--allow-destination NAME` | exact allowlist entry; repeatable | required for send |
@@ -502,7 +493,7 @@ Options:
 ### Output
 
 One JSON object per run: `tool`, `version`, `mode`, `source` (`kind`, the
-requested game and environment, and the window), `report` (the typed report:
+game and environment, and the window), `report` (the typed report:
 `game`, `window`, `reportDate`, `previousDay`, `series`, `missingDates`,
 `comparison`, `idempotencyKey`), `message` (the exact text), `delivery`
 (destination, allowlist, and the two guards), `status`, and `send`. In
@@ -526,8 +517,9 @@ the fake CDP session over the synthetic Slack page: a send that posts the
 exact message, a duplicate refusal, and an exact-destination refusal.
 `test/fixtures/unity-data-access.json` records result sets
 in the SQL API encoding with the official column names; it is synthetic data,
-not a real account. Nothing in the test suite or the dry-run touches Snowflake
-or Slack.
+not a real account. Tests inject that fixture executor and a fixed clock
+through the programmatic CLI seam, so the test suite touches neither Snowflake
+nor Slack.
 
 A live read-only smoke (two `SELECT`s under process-scoped credentials, no
 Slack) is the remaining validation once the Unity share has propagated; it is
