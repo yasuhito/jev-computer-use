@@ -225,10 +225,10 @@ function composerHolds(snapshot, composerBackendNodeId, text) {
  *
  * Two optional caller guards tighten the workflow deterministically:
  * `exactDestination` requires the requested name to be exactly the leading
- * name of the chosen destination's accessible name (see
- * destinationNameMatches), so an allowlisted name is never satisfied by a
- * merely similar label; `duplicateMarker` refuses to draft or send when the
- * destination's currently rendered accessibility tree contains the marker.
+ * name of the chosen destination (see destinationNameMatches), so an
+ * allowlisted name is never satisfied by a merely similar label;
+ * `duplicateMarker` refuses to draft or send when the destination's currently
+ * rendered accessibility tree contains the marker.
  * This is a best-effort preflight guard, not durable or atomic idempotency.
  *
  * @param {{mode: Mode, destination: string|null, text?: string|null, adapter: CdpAdapter, decide: DecideFn|null, threshold?: number, maxCandidates: number, exactDestination?: boolean, duplicateMarker?: string|null}} input
