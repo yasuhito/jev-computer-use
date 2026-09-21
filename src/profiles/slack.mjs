@@ -3,9 +3,8 @@
  * CdpAdapter. It recognizes exactly three candidate kinds and permits
  * exactly three typed actions:
  *
- * - destination: a link into the Slack web client (workspace, channel,
- *   direct message, or group message) on the same origin as the page;
- *   action: click.
+ * - destination: a channel link in the Slack web client on the same origin
+ *   as the page; action: click.
  * - composer: the conversation's message textbox; actions: click (focus)
  *   and insertText (the caller's exact text).
  * - send: the composer's submit button; action: click, and only when the
@@ -21,8 +20,8 @@ import { parseUrl } from "./profile.mjs";
 /** @typedef {import("./profile.mjs").Profile} Profile */
 /** @typedef {import("./profile.mjs").ObservedTarget} ObservedTarget */
 
-/** Slack web client conversation path: /client/<team>[/<conversation>]. */
-export const SLACK_CLIENT_PATH = /^\/client\/(T[A-Z0-9]{2,})(?:\/([CDG][A-Z0-9]{2,}))?\/?$/;
+/** Slack web client channel path: /client/<team>/<channel>. */
+export const SLACK_CLIENT_PATH = /^\/client\/(T[A-Z0-9]{2,})\/(C[A-Z0-9]{2,})\/?$/;
 
 /** Composer textboxes are named "Message #channel", "Message Alice", ... */
 export const SLACK_COMPOSER_NAME = /^message\b/i;
@@ -30,29 +29,20 @@ export const SLACK_COMPOSER_NAME = /^message\b/i;
 /** The submit control of the composer. */
 export const SLACK_SEND_NAME = /^send(\s+now)?$/i;
 
-const KIND_LABELS = Object.freeze({
-  T: "workspace",
-  C: "channel",
-  D: "direct message",
-  G: "group message",
-});
-
 /**
  * Classify a Slack client URL relative to the page origin.
  *
  * @param {string} url
  * @param {string} origin
- * @returns {{team: string, conversation: string|null, kindLabel: string}|null}
+ * @returns {{team: string, conversation: string, kindLabel: "channel"}|null}
  */
 export function classifySlackTarget(url, origin) {
   const parsed = parseUrl(url);
   if (!parsed || parsed.origin !== origin || parsed.search !== "" || parsed.hash !== "") return null;
   const match = SLACK_CLIENT_PATH.exec(parsed.pathname);
   if (!match || match[1] === undefined) return null;
-  const conversation = match[2] ?? null;
-  const prefix = conversation === null ? "T" : conversation.charAt(0);
-  const kindLabel = KIND_LABELS[/** @type {keyof typeof KIND_LABELS} */ (prefix)] ?? "conversation";
-  return { team: match[1], conversation, kindLabel };
+  if (match[2] === undefined) return null;
+  return { team: match[1], conversation: match[2], kindLabel: "channel" };
 }
 
 /**

@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { GENERIC_PROFILE } from "../src/profiles/profile.mjs";
 import { SLACK_PROFILE, SLACK_LOCAL_SYNTHETIC_PROFILE, classifySlackTarget } from "../src/profiles/slack.mjs";
 import { PROFILES, DEFAULT_PROFILE_NAME } from "../src/profiles/index.mjs";
 import { ALLOWED_CDP_METHODS, CdpAdapter } from "../src/cdp/adapter.mjs";
@@ -59,15 +58,16 @@ test("slack profile accepts only the Slack web client origin as a target", () =>
   }
 });
 
-test("slack profile recognizes same-origin client links as destinations with a kind tag", () => {
+test("slack profile recognizes only same-origin channel links as destinations", () => {
   const channel = SLACK_PROFILE.recognize(node({ name: "general", url: "https://app.slack.com/client/T0SYNTH/C0GENERAL" }), SLACK);
   assert.deepEqual(channel, { kind: "destination", label: "general [channel]" });
-  const dm = SLACK_PROFILE.recognize(node({ name: "Alice", url: "https://app.slack.com/client/T0SYNTH/D0ALICE" }), SLACK);
-  assert.deepEqual(dm, { kind: "destination", label: "Alice [direct message]" });
-  const group = SLACK_PROFILE.recognize(node({ name: "trio", url: "https://app.slack.com/client/T0SYNTH/G0TRIO" }), SLACK);
-  assert.deepEqual(group, { kind: "destination", label: "trio [group message]" });
-  const workspace = SLACK_PROFILE.recognize(node({ name: "Acme", url: "https://app.slack.com/client/T0SYNTH/" }), SLACK);
-  assert.deepEqual(workspace, { kind: "destination", label: "Acme [workspace]" });
+  for (const url of [
+    "https://app.slack.com/client/T0SYNTH/D0ALICE",
+    "https://app.slack.com/client/T0SYNTH/G0TRIO",
+    "https://app.slack.com/client/T0SYNTH/",
+  ]) {
+    assert.equal(SLACK_PROFILE.recognize(node({ name: "not a channel", url }), SLACK), null, url);
+  }
 });
 
 test("slack profile never recognizes external, query, admin, sign-out, download, or cross-origin links", () => {
@@ -147,24 +147,8 @@ test("slack-local-synthetic profile accepts only loopback http origins", () => {
   assert.equal(SLACK_LOCAL_SYNTHETIC_PROFILE.recognize(node({ name: "general", url: "https://app.slack.com/client/T0SYNTH/C0GENERAL" }), local), null);
 });
 
-/* ----------------------------- generic profile ----------------------------- */
-
-test("generic profile observes links, editables, and buttons but is never trusted and never allows an action", () => {
-  const target = { id: "T", url: "https://example.com/app", origin: "https://example.com", title: "App" };
-  assert.equal(GENERIC_PROFILE.trusted, false);
-  assert.equal(GENERIC_PROFILE.checkTarget(target).ok, true);
-  assert.equal(GENERIC_PROFILE.checkTarget({ ...target, url: "file:///x.html", origin: "null" }).ok, false);
-  assert.deepEqual(GENERIC_PROFILE.recognize(node({ name: "Docs", url: "https://example.com/docs" }), target), { kind: "destination", label: "Docs" });
-  assert.deepEqual(GENERIC_PROFILE.recognize(node({ role: "textbox", name: "Comment" }), target), { kind: "composer", label: "Comment" });
-  assert.deepEqual(GENERIC_PROFILE.recognize(node({ role: "button", name: "Delete" }), target), { kind: "control", label: "Delete" });
-  assert.equal(GENERIC_PROFILE.recognize(node({ name: "js", url: "javascript:alert(1)" }), target), null);
-  for (const kind of /** @type {const} */ (["destination", "composer", "send", "control"])) {
-    assert.equal(GENERIC_PROFILE.allowAction(candidate({ kind }), "click", target).ok, false);
-  }
-});
-
 test("profile registry exposes the named profiles and defaults to slack", () => {
-  assert.deepEqual([...PROFILES.keys()].sort(), ["generic-web", "slack", "slack-local-synthetic"]);
+  assert.deepEqual([...PROFILES.keys()].sort(), ["slack", "slack-local-synthetic"]);
   assert.equal(DEFAULT_PROFILE_NAME, "slack");
 });
 

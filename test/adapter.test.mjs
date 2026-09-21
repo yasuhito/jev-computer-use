@@ -2,12 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CdpAdapter, ALLOWED_CDP_METHODS, urlReached, digestCandidates } from "../src/cdp/adapter.mjs";
 import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
-import { GENERIC_PROFILE } from "../src/profiles/profile.mjs";
 import { RefusalError, TransportError, CdpProtocolError } from "../src/errors.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
 import { fakeClock } from "./helpers.mjs";
 
 const ALLOWED = new Set(ALLOWED_CDP_METHODS);
+const UNTRUSTED_PROFILE = { ...SLACK_PROFILE, name: "untrusted-test", trusted: false };
 
 /**
  * @param {Parameters<typeof createFakeCdp>[0]} [fakeOptions]
@@ -60,7 +60,7 @@ test("observe recognizes only profile candidates, assigns node ids, and keeps a 
   assert.ok(a.nodeCount > a.candidates.length);
   assert.deepEqual(
     a.candidates.map((c) => c.kind),
-    ["destination", "destination", "destination", "destination", "composer", "send"],
+    ["destination", "destination", "destination", "composer", "send"],
   );
   assert.ok(a.candidates.every((c) => /^n\d+$/.test(c.id) && c.id === `n${c.backendNodeId}`));
   const labels = a.candidates.map((c) => c.label);
@@ -140,7 +140,7 @@ test("click reports unverified when the page never reaches the expected URL", as
 
 test("click gate: untrusted profile, unsupported action, stale snapshot", async () => {
   const generic = createFakeCdp();
-  const untrusted = new CdpAdapter({ session: generic.session, profile: GENERIC_PROFILE });
+  const untrusted = new CdpAdapter({ session: generic.session, profile: UNTRUSTED_PROFILE });
   const gSnap = await untrusted.observe();
   const gDest = gSnap.candidates.find((c) => c.kind === "destination");
   assert.ok(gDest);

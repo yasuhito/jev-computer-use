@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CdpAdapter, ALLOWED_CDP_METHODS } from "../src/cdp/adapter.mjs";
 import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
-import { GENERIC_PROFILE } from "../src/profiles/profile.mjs";
 import { runWorkflow, validateMessageText, validateDestination, DEFAULT_BROWSE_MIN_CONFIDENCE } from "../src/workflow.mjs";
 import { ValidationError } from "../src/validate.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
@@ -12,6 +11,7 @@ const ALLOWED = new Set(ALLOWED_CDP_METHODS);
 const QA2 = "https://app.slack.com/client/T0SYNTH/C0QA2METRICS";
 const TEXT = "QA2 daily users: 1234 (+5% vs yesterday)";
 const FULL_FLOW = [/^qa2-metrics/, /^Message #qa2-metrics/, /^Send now/];
+const UNTRUSTED_PROFILE = { ...SLACK_PROFILE, name: "untrusted-test", trusted: false };
 
 /**
  * @param {Parameters<typeof createFakeCdp>[0]} [fakeOptions]
@@ -53,7 +53,7 @@ test("observe mode snapshots candidates with no model call and no input", async 
   const decide = decideByLabel([]);
   const report = await run(env, { mode: "observe", destination: null, decide });
   assert.equal(report.status, "observed");
-  assert.ok(report.candidates && report.candidates.length === 6);
+  assert.ok(report.candidates && report.candidates.length === 5);
   assert.ok(report.candidates.every((c) => !("value" in c)));
   assert.equal(decide.calls.length, 0);
   assertNoInput(env.fake);
@@ -95,7 +95,7 @@ test("dry-run sends the model only recognized candidates with the instruction bo
   assert.ok(request);
   const criteria = request.questions.element?.criteria ?? {};
   const ids = Object.keys(criteria);
-  assert.equal(ids.length, 5);
+  assert.equal(ids.length, 4);
   assert.ok(ids.includes("no_match"));
   const descriptions = Object.values(criteria).join("\n");
   assert.match(descriptions, /link: qa2-metrics \(channel\) \[channel\]/);
@@ -105,8 +105,8 @@ test("dry-run sends the model only recognized candidates with the instruction bo
   assert.match(String(instructions.question), /qa2-metrics/);
 });
 
-test("dry-run under the generic profile plans nothing executable", async () => {
-  const env = setup({ origin: "https://unknown-app.example" }, { profile: GENERIC_PROFILE });
+test("dry-run under an untrusted injected profile plans nothing executable", async () => {
+  const env = setup({}, { profile: UNTRUSTED_PROFILE });
   const report = await run(env, { mode: "dry-run", destination: "qa2-metrics", decide: decideByLabel([/^qa2-metrics/]) });
   assert.equal(report.status, "selected");
   assert.equal(report.trusted, false);
@@ -114,7 +114,7 @@ test("dry-run under the generic profile plans nothing executable", async () => {
   assert.ok(plan);
   assert.equal(plan.executable, false);
   assert.equal(plan.blocker, "untrusted_profile");
-  assert.equal(plan.preview.destination.ok, false);
+  assert.equal(plan.preview.destination.ok, true);
   assertNoInput(env.fake);
 });
 
@@ -140,7 +140,7 @@ test("no destination candidates and an untrusted profile refuse execution modes"
   assert.equal(empty.status, "refused");
   assert.equal(empty.refusal?.code, "no_candidates");
   assertNoInput(env.fake);
-  const generic = setup({ origin: "https://unknown-app.example" }, { profile: GENERIC_PROFILE });
+  const generic = setup({}, { profile: UNTRUSTED_PROFILE });
   const report = await run(generic, { mode: "navigate", decide: decideByLabel([/^qa2-metrics/]) });
   assert.equal(report.status, "refused");
   assert.equal(report.refusal?.code, "untrusted_profile");

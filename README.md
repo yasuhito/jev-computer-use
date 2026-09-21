@@ -186,13 +186,12 @@ profile already recognized, followed by deterministic validation in code.
   `Page.navigate`, network, storage, emulation, and DOM mutation methods are
   refused before they reach the transport.
 - **Trusted profiles only execute.** `slack` and `slack-local-synthetic` are
-  trusted. `generic-web` recognizes links, editables, and buttons on any http(s)
-  page for observation and selection, but it is never trusted, so every
-  execution mode under it is refused with `untrusted_profile`.
+  trusted; the adapter also refuses execution for any injected untrusted
+  profile.
 - **Slack allowlist.** The Slack profile recognizes exactly three kinds:
-  destinations (same-origin `https://app.slack.com/client/<team>[/<C|D|G id>]`
-  links with no query or fragment; workspace, channel, direct message, group
-  message), the composer (a `textbox` named `Message ...`), and the send
+  destinations (same-origin `https://app.slack.com/client/<team>/<C id>`
+  channel links with no query or fragment), the composer (a `textbox` named
+  `Message ...`), and the send
   control (a `button` named `Send` or `Send now`, only while enabled). It
   never recognizes, so the model is never offered and no action can reach:
   reactions, uploads, downloads, deletion, external links, sign-in or
@@ -257,7 +256,7 @@ Options:
 
 | Option | Meaning | Default |
 | --- | --- | --- |
-| `--profile NAME` | `slack`, `slack-local-synthetic`, or `generic-web` | `slack` |
+| `--profile NAME` | `slack` or `slack-local-synthetic` | `slack` |
 | `--destination NAME` | the conversation to open, as the caller names it | required beyond observe |
 | `--text TEXT` / `--text-file FILE` | exact message text (draft and send); newline and tab allowed, other control characters rejected, at most 4000 characters | |
 | `--mode MODE` | `observe`, `dry-run`, `navigate`, `draft`, `send` | `dry-run` |
