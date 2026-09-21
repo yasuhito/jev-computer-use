@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { runDailyJob } from "../src/schedule/daily.mjs";
 import { runReportJob } from "../bin/jev-cu-report.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
+import { loadSyntheticPage } from "./fixtures/synthetic-slack.mjs";
 import { decideByLabel, fakeClock } from "./helpers.mjs";
 import { loadFixtureExecutor } from "../src/snowflake/executor.mjs";
 
@@ -22,6 +23,15 @@ const DATE = "2026-09-20";
 const cExecutor = await loadFixtureExecutor(FIXTURE);
 const cClock = fakeClock();
 cClock.advance(NOW_MS - cClock.now());
+
+function createDailyFakeCdp() {
+  const page = loadSyntheticPage();
+  const destination = page.conversations.find((conversation) => conversation.id === "C0QA2METRICS");
+  assert.ok(destination);
+  destination.id = "C0QA2";
+  destination.name = "qa2";
+  return createFakeCdp({ page });
+}
 
 /** @typedef {NonNullable<Parameters<typeof runDailyJob>[0]>} DailyIo */
 /** @typedef {NonNullable<DailyIo["decide"]>} DecideFn */
@@ -62,7 +72,7 @@ async function captureIo(overrides = {}) {
     connect:
       overrides.connect ??
       (async () => {
-        const fake = createFakeCdp();
+        const fake = createDailyFakeCdp();
         sessions.push(fake);
         return fake.session;
       }),
@@ -135,7 +145,7 @@ test("a duplicate-marker refusal ends the run without drafting and without a rec
   // is never recorded as success; a human checks the channel.
   const c = await captureIo({
     connect: async () => {
-      const fake = createFakeCdp();
+      const fake = createDailyFakeCdp();
       fake.state.messages.set("/client/T0SYNTH/C0QA2", [`QA2 new users (Live) for 2026-09-20 (UTC)\n... key: ${KEY}`]);
       c.sessions.push(fake);
       return fake.session;
@@ -163,7 +173,7 @@ test("an unverified send is retried, never recorded, and fails the run at the bo
     connect: async () => {
       // Every attempt starts from a fresh page whose send click is swallowed;
       // the workflow clicks send but can never verify the post.
-      const fake = createFakeCdp();
+      const fake = createDailyFakeCdp();
       fake.state.posting = false;
       c.sessions.push(fake);
       return fake.session;
@@ -192,7 +202,7 @@ test("a retry after an unverified send hits the marker and still never records o
   const c = await captureIo({
     decide: decideByLabel([...SEND_FLOW, /^qa2(?:$|\s|,|\()/]), // attempt 2 refuses at the duplicate check, right after the destination decision
     connect: async () => {
-      const fake = createFakeCdp();
+      const fake = createDailyFakeCdp();
       if (c.sessions.length > 0) {
         fake.state.messages.set("/client/T0SYNTH/C0QA2", [`QA2 new users (Live) for 2026-09-20 (UTC)\nNew users on 2026-09-20: 1,234\n... key: ${KEY}`]);
       } else {
@@ -236,7 +246,7 @@ test("a composer left holding an unposted draft is refused, never appended to", 
     extraArgv: ["--max-attempts", "2", "--retry-base-sec", "1"],
     decide: decideByLabel(sendFlow(2)),
     connect: async () => {
-      const fake = createFakeCdp();
+      const fake = createDailyFakeCdp();
       if (c.sessions.length > 0) {
         // The retry reconnects to the same channel, whose composer still
         // holds the unposted draft from the first attempt.
