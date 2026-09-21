@@ -72,9 +72,9 @@ Delivery options:
   --help                show this help and exit
 
 Environment: SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PRIVATE_KEY_PATH,
-  SNOWFLAKE_WAREHOUSE, SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA (required for
-  optional SNOWFLAKE_ROLE, SNOWFLAKE_PRIVATE_KEY_PASSPHRASE,
-  SNOWFLAKE_HOST); TYPESAFE_API_KEY (send only). Never printed or stored.
+  SNOWFLAKE_WAREHOUSE, SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA (required);
+  SNOWFLAKE_ROLE, SNOWFLAKE_PRIVATE_KEY_PASSPHRASE, SNOWFLAKE_HOST (optional);
+  TYPESAFE_API_KEY (send only). Never printed or stored.
 Exit codes: 0 outcome, 1 runtime error, 2 usage error.`;
 
 /**

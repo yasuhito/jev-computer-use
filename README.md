@@ -494,7 +494,8 @@ Options:
 
 ### Output
 
-One JSON object per run: `tool`, `version`, `mode`, `source` (`kind`, the
+Except for `--help`, one JSON object is written to stdout per run: `tool`,
+`version`, `mode`, `source` (`kind`, the
 game and environment, and the window), `report` (the typed report:
 `game`, `window`, `reportDate`, `previousDay`, `series`, `missingDates`,
 `comparison`, `idempotencyKey`), `message` (the exact text), `delivery`
