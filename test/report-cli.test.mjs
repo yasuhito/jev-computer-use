@@ -100,7 +100,7 @@ test("dry-run against the fixture prints the typed report and the exact message,
   assert.equal(payload.report.game.gameId, 24601);
   assert.equal(payload.report.idempotencyKey, KEY);
   assert.equal(payload.delivery.duplicateMarker, KEY);
-  assert.match(payload.message, /^QA2 new users \(production\) for 2026-09-20 \(UTC\)\n/);
+  assert.match(payload.message, /^QA2 new users \(live\) for 2026-09-20 \(UTC\)\n/);
   assert.ok(payload.message.endsWith(`key: ${KEY}`));
   assert.equal(connected, false);
   assert.equal(c.err.join(""), "");
@@ -171,7 +171,7 @@ test("send mode refuses when the rendered channel contains the report key withou
   const c = await captureFixtureIo(["--mode", "send", "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"], {
     decide: decideByLabel(SEND_FLOW),
   });
-  c.fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", [`QA2 new users (production) for 2026-09-20 (UTC)\n... key: ${KEY}`]);
+  c.fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", [`QA2 new users (live) for 2026-09-20 (UTC)\n... key: ${KEY}`]);
   assert.equal(await runCli(c.io), 0);
   const payload = c.json();
   assert.equal(payload.status, "refused");

@@ -38,7 +38,7 @@ export const NEW_USERS_BY_START_DATE_STATEMENT = [
 ].join("\n");
 
 export const DEFAULT_GAME_NAME = "QA2";
-export const DEFAULT_ENVIRONMENT_NAME = "production";
+export const DEFAULT_ENVIRONMENT_NAME = "live";
 // eslint-disable-next-line no-control-regex
 const NAME_PATTERN = /^[^\s\u0000-\u001F\u007F][^\u0000-\u001F\u007F]{0,199}$/;
 

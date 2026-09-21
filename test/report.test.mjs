@@ -18,7 +18,7 @@ import { createFixtureExecutor, loadFixtureExecutor, assertReadOnlyStatement } f
 const FIXTURE_PATH = fileURLToPath(new URL("./fixtures/unity-data-access.json", import.meta.url));
 const NOW = Date.parse("2026-09-21T09:00:00Z");
 
-const GAME = { accountName: "Synthetic Studio", gameName: "QA2", gameId: 24601, environmentName: "production", environmentId: 31001, unityProjectId: null, environmentsSeen: ["production"] };
+const GAME = { accountName: "Synthetic Studio", gameName: "QA2", gameId: 24601, environmentName: "live", environmentId: 31001, unityProjectId: null, environmentsSeen: ["live"] };
 
 /**
  * @param {Array<[string, number]>} points
@@ -67,19 +67,19 @@ test("statements are read-only, bound positionally, and resolve the game by name
   assert.throws(() => newUsersByStartDateStatement({ gameId: 1.5, environmentId: 1, start: "2026-09-07", end: "2026-09-21" }));
 });
 
-test("resolveGameEnvironment selects exactly the production row of the named game", async () => {
+test("resolveGameEnvironment selects exactly the live row of the named game", async () => {
   const executor = await loadFixtureExecutor(FIXTURE_PATH);
   const game = await resolveGameEnvironment(executor);
   assert.deepEqual(game, {
     accountName: "Synthetic Studio",
     gameName: "QA2",
     gameId: 24601,
-    environmentName: "production",
+    environmentName: "live",
     environmentId: 31001,
     unityProjectId: "00000000-0000-4000-8000-000000000002",
-    environmentsSeen: ["development", "production"],
+    environmentsSeen: ["development", "live"],
   });
-  assert.equal((await resolveGameEnvironment(executor, { environmentName: "Production" })).environmentId, 31001);
+  assert.equal((await resolveGameEnvironment(executor, { environmentName: "Live" })).environmentId, 31001);
   assert.equal(executor.calls[0]?.name, "account_games");
 });
 
@@ -100,17 +100,17 @@ test("resolveGameEnvironment fails closed on missing, ambiguous, or wrong-enviro
   const expectCode = (code, p) => assert.rejects(p, (/** @type {DataAccessError} */ err) => err instanceof DataAccessError && err.code === code);
   await expectCode("game_not_found", resolveGameEnvironment(gamesExecutor([])));
   // Exact name match is repeated in code even though SQL already filtered.
-  await expectCode("game_not_found", resolveGameEnvironment(gamesExecutor([["A", "qa2", "1", "production", "2", null]])));
+  await expectCode("game_not_found", resolveGameEnvironment(gamesExecutor([["A", "qa2", "1", "live", "2", null]])));
   await expectCode(
     "ambiguous_game",
-    resolveGameEnvironment(gamesExecutor([["A", "QA2", "1", "production", "2", null], ["A", "QA2", "9", "production", "3", null]])),
+    resolveGameEnvironment(gamesExecutor([["A", "QA2", "1", "live", "2", null], ["A", "QA2", "9", "live", "3", null]])),
   );
   await expectCode("environment_not_found", resolveGameEnvironment(gamesExecutor([["A", "QA2", "1", "development", "2", null]])));
   await expectCode(
     "ambiguous_environment",
-    resolveGameEnvironment(gamesExecutor([["A", "QA2", "1", "production", "2", null], ["A", "QA2", "1", "PRODUCTION", "3", null]])),
+    resolveGameEnvironment(gamesExecutor([["A", "QA2", "1", "live", "2", null], ["A", "QA2", "1", "LIVE", "3", null]])),
   );
-  await expectCode("invalid_row", resolveGameEnvironment(gamesExecutor([["A", "QA2", null, "production", "2", null]])));
+  await expectCode("invalid_row", resolveGameEnvironment(gamesExecutor([["A", "QA2", null, "live", "2", null]])));
   await expectCode("invalid_name", resolveGameEnvironment(gamesExecutor([]), { gameName: " QA2" }));
   await expectCode("invalid_name", resolveGameEnvironment(gamesExecutor([]), { environmentName: "prod\u0007" }));
 });
@@ -208,7 +208,7 @@ test("the Slack message is deterministic plain text carrying the date, count, co
   assert.equal(
     message,
     [
-      "QA2 new users (production) for 2026-09-20 (UTC)",
+      "QA2 new users (live) for 2026-09-20 (UTC)",
       "New users on 2026-09-20: 1,234",
       "vs 2026-09-19 (1,178): +56 (+4.8%)",
       "vs trailing 7-day avg 2026-09-13..2026-09-19 (1,035.4): +198.6 (+19.2%), trend: up",
