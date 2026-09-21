@@ -52,13 +52,11 @@ async function captureFixtureIo(argv, overrides = {}) {
 test("parseArgs defaults to a snowflake dry-run and validates every flag", () => {
   const o = parseArgs([]);
   assert.equal(o.mode, "dry-run");
-  assert.equal(o.days, 14);
-  assert.equal(o.seriesDays, 7);
   assert.deepEqual(parseArgs(["--mode", "send", "--destination", "a", "--allow-destination", "a", "--allow-destination", "b"]).allowDestinations, ["a", "b"]);
   assert.throws(() => parseArgs(["--source", "fixture"]), /unknown option/);
   assert.throws(() => parseArgs(["--fixture", "x.json"]), /unknown option/);
-  assert.throws(() => parseArgs(["--days", "7"]), /8\.\.90/);
-  assert.throws(() => parseArgs(["--days", "8", "--series-days", "9"]), /may not exceed/);
+  assert.throws(() => parseArgs(["--days", "8"]), /unknown option/);
+  assert.throws(() => parseArgs(["--series-days", "7"]), /unknown option/);
   assert.throws(() => parseArgs(["--now", "2026-09-21T09:00:00Z"]), /unknown option/);
   assert.throws(() => parseArgs(["--mode", "send", "--destination", "a"]), /requires at least one --allow-destination/);
   assert.throws(() => parseArgs(["--mode", "send", "--allow-destination", "a"]), /requires --destination/);

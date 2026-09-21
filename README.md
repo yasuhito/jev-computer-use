@@ -388,8 +388,8 @@ or several rows at any step is an error
 
 All dates are UTC calendar days. With the current clock:
 
-- **window**: the `--days` (default 14, at least 8) complete UTC days before
-  today, `[today - days, today)`. The current UTC day is always excluded
+- **window**: the 14 complete UTC days before today, `[today - 14 days, today)`.
+  The current UTC day is always excluded
   because it is still accumulating.
 - **reportDate**: the last complete day, `today - 1`.
 - **New users on a day**: `COUNT(DISTINCT USER_ID)` of users whose player
@@ -483,8 +483,6 @@ Options:
 
 | Option | Meaning | Default |
 | --- | --- | --- |
-| `--days N` | complete UTC days in the window, 8..90 | `14` |
-| `--series-days N` | days shown in the message series, 1..days | `7` |
 | `--mode MODE` | `dry-run`, `send` | `dry-run` |
 | `--destination NAME` | Slack channel, exactly as the sidebar names it | required for send |
 | `--allow-destination NAME` | exact allowlist entry; repeatable | required for send |

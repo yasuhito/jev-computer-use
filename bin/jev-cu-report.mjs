@@ -29,7 +29,7 @@ import {
   resolveGameEnvironment,
   fetchNewUsersByStartDate,
 } from "../src/unity/data-access.mjs";
-import { completeUtcWindow, DEFAULT_WINDOW_DAYS, MIN_WINDOW_DAYS, MAX_WINDOW_DAYS } from "../src/report/dates.mjs";
+import { completeUtcWindow, DEFAULT_WINDOW_DAYS } from "../src/report/dates.mjs";
 import { buildNewUsersReport } from "../src/report/new-users.mjs";
 import { renderSlackMessage, DEFAULT_SERIES_DAYS } from "../src/report/slack-message.mjs";
 
@@ -39,8 +39,6 @@ const VERSION = "0.1.0";
 export const REPORT_MODES = Object.freeze(["dry-run", "send"]);
 /** @typedef {"dry-run"|"send"} ReportMode */
 const VALUE_FLAGS = new Set([
-  "--days",
-  "--series-days",
   "--mode",
   "--destination",
   "--allow-destination",
@@ -58,10 +56,6 @@ Daily New Users report from Unity Analytics Data Access (Snowflake share),
 computed deterministically and rendered as exact Slack text. Dry-run is the
 default and touches no browser. --mode send posts through jev-cu-browse's
 bounded workflow, only to a destination named in --allow-destination.
-
-Data options:
-  --days N              complete UTC days in the window, ${MIN_WINDOW_DAYS}..${MAX_WINDOW_DAYS} (default ${DEFAULT_WINDOW_DAYS})
-  --series-days N       days shown in the message series, 1..days (default ${DEFAULT_SERIES_DAYS})
 
 Delivery options:
   --mode MODE           ${REPORT_MODES.join(" | ")} (default dry-run)
@@ -84,8 +78,6 @@ Exit codes: 0 outcome, 1 runtime error, 2 usage error.`;
 
 /**
  * @typedef {object} Options
- * @property {number} days
- * @property {number} seriesDays
  * @property {ReportMode} mode
  * @property {string|null} destination
  * @property {string[]} allowDestinations
@@ -106,8 +98,6 @@ Exit codes: 0 outcome, 1 runtime error, 2 usage error.`;
 export function parseArgs(argv) {
   /** @type {Options} */
   const options = {
-    days: DEFAULT_WINDOW_DAYS,
-    seriesDays: DEFAULT_SERIES_DAYS,
     mode: "dry-run",
     destination: null,
     allowDestinations: [],
@@ -149,12 +139,6 @@ export function parseArgs(argv) {
       i += 1;
     }
     switch (flag) {
-      case "--days":
-        options.days = integer(flag, inline, MIN_WINDOW_DAYS, MAX_WINDOW_DAYS);
-        break;
-      case "--series-days":
-        options.seriesDays = integer(flag, inline, 1, MAX_WINDOW_DAYS);
-        break;
       case "--mode":
         if (!REPORT_MODES.includes(inline)) throw new Error(`--mode must be one of ${REPORT_MODES.join(", ")}, got "${inline}"`);
         options.mode = /** @type {ReportMode} */ (inline);
@@ -189,7 +173,6 @@ export function parseArgs(argv) {
         break;
     }
   }
-  if (options.seriesDays > options.days) throw new Error(`--series-days (${options.seriesDays}) may not exceed --days (${options.days})`);
   if (options.mode !== "dry-run") {
     if (options.destination === null) throw new Error(`--mode ${options.mode} requires --destination`);
     if (options.allowDestinations.length === 0) throw new Error(`--mode ${options.mode} requires at least one --allow-destination`);
@@ -291,11 +274,11 @@ export async function runCli({
     const source = executor ?? createSqlApiExecutor({ env, now, ...(sleep ? { sleep } : {}) });
 
     const clock = now();
-    const window = completeUtcWindow(clock, options.days);
+    const window = completeUtcWindow(clock, DEFAULT_WINDOW_DAYS);
     const game = await resolveGameEnvironment(source, { gameName, environmentName });
     const rows = await fetchNewUsersByStartDate(source, { gameId: game.gameId, environmentId: game.environmentId, start: window.start, end: window.end });
     const report = buildNewUsersReport({ game, window, rows, generatedAt: new Date(clock).toISOString() });
-    const message = validateMessageText(renderSlackMessage(report, { seriesDays: options.seriesDays }));
+    const message = validateMessageText(renderSlackMessage(report, { seriesDays: DEFAULT_SERIES_DAYS }));
 
     const base = {
       tool: TOOL,
