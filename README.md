@@ -519,8 +519,11 @@ failure mode, the report arithmetic, the message, and the CLI end to end with
 the fake CDP session over the synthetic Slack page: a send that posts the
 exact message, a duplicate refusal, and an exact-destination refusal.
 `test/fixtures/unity-data-access.json` records result sets
-in the SQL API encoding with the official column names; it is synthetic data,
-not a real account. Tests inject that fixture executor and a fixed clock
+in the SQL API encoding with the official column names, plus the official
+source-side columns of the two views (`schema`); the schema compile test
+resolves every identifier and binding of the generated statements against
+it. The fixture data is synthetic, not a real account. Tests inject that
+fixture executor and a fixed clock
 through the programmatic CLI seam, so the test suite touches neither Snowflake
 nor Slack.
 

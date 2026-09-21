@@ -1,5 +1,33 @@
 {
   "_note": "Recorded in Snowflake SQL API encoding (every cell a string or null; DATE = days since 1970-01-01; FIXED = integer string). Columns follow the official Unity Analytics Data Access view reference. Synthetic values; not a real account. Tests inject a fixed clock of 2026-09-21T09:00:00Z (window 2026-09-07..2026-09-20, report date 2026-09-20).",
+  "schema": {
+    "_note": "Source-side columns of the two views this slice queries, per the official view reference (docs.unity.com/en-us/analytics/data-access/data-access-views). The schema compile test resolves every identifier and binding of the generated statements against it. ACCOUNT_USERS has START_DATE, not PLAYER_START_DATE; PLAYER_START_DATE exists only in ACCOUNT_EVENTS and the fact views.",
+    "ACCOUNT_GAMES": [
+      { "name": "ACCOUNT_NAME", "type": "TEXT" },
+      { "name": "GAME_NAME", "type": "TEXT" },
+      { "name": "GAME_ID", "type": "NUMBER" },
+      { "name": "ENVIRONMENT_NAME", "type": "TEXT" },
+      { "name": "ENVIRONMENT_ID", "type": "NUMBER" },
+      { "name": "UNITY_PROJECT_ID", "type": "TEXT" }
+    ],
+    "ACCOUNT_USERS": [
+      { "name": "ACCOUNT_NAME", "type": "TEXT" },
+      { "name": "GAME_NAME", "type": "TEXT" },
+      { "name": "GAME_ID", "type": "NUMBER" },
+      { "name": "ENVIRONMENT_NAME", "type": "TEXT" },
+      { "name": "ENVIRONMENT_ID", "type": "NUMBER" },
+      { "name": "USER_ID", "type": "TEXT" },
+      { "name": "BIRTH_YEAR", "type": "NUMBER" },
+      { "name": "LAST_SESSION_ID", "type": "TEXT" },
+      { "name": "LAST_EVENT_TIMESTAMP", "type": "TIMESTAMP" },
+      { "name": "LAST_PLATFORM", "type": "TEXT" },
+      { "name": "COUNTRY", "type": "TEXT" },
+      { "name": "GENDER", "type": "TEXT" },
+      { "name": "START_DATE", "type": "DATE" },
+      { "name": "ACQUISITION_CHANNEL", "type": "TEXT" },
+      { "name": "LAST_LOCALE", "type": "TEXT" }
+    ]
+  },
   "results": {
     "account_games": {
       "_note": "Response to ACCOUNT_GAMES WHERE GAME_NAME = 'QA2': one row per environment.",
