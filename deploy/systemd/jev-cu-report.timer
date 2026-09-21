@@ -4,7 +4,7 @@
 # per-date record makes that catch-up idempotent.
 #
 # Enabling this timer on the deployment host is a separately authorized step;
-# see README "Daily schedule" for the checklist.
+# see README "jev-cu-daily: unattended daily schedule" for the checklist.
 
 [Unit]
 Description=Daily 10:00 JST run of jev-cu-report.service

@@ -117,10 +117,11 @@ skipped-locked, or dry-run; 1 failed; 2 usage error.`;
 
 /**
  * @param {string[]} argv
+ * @param {{env?: NodeJS.ProcessEnv}} [_context] reserved injection context; destination configuration is intentionally ignored
  * @returns {DailyOptions}
  * @throws {Error} on unknown or malformed options (usage error)
  */
-export function parseDailyArgs(argv) {
+export function parseDailyArgs(argv, _context = {}) {
   /** @type {DailyOptions} */
   const options = {
     stateDir: null,
@@ -280,7 +281,7 @@ function dailyPayload({ status, mode, targetDate, attempts, record }) {
  * Run the daily job once. Everything that varies in tests is injectable: the
  * report runner, the record store, the lock, the clock, and sleep.
  *
- * @param {{argv?: string[], stderr?: {write: (chunk: string) => unknown}, env?: NodeJS.ProcessEnv, executor?: import("../snowflake/executor.mjs").SqlExecutor|null, decide?: import("../decide.mjs").DecideFn|null, connect?: ConnectFn, settleMs?: number, now?: () => number, sleep?: (ms: number) => Promise<void>, store?: import("./state.mjs").RecordStore|null, lock?: ((input: {dir: string, pid?: number, bootId?: string|null, now: () => number, staleMs?: number}) => Promise<import("./state.mjs").LockResult>)|null, bootId?: string|null, runReport?: ((io: object) => Promise<ReportResult>)|null}} [io]
+ * @param {{argv?: string[], stderr?: {write: (chunk: string) => unknown}, env?: NodeJS.ProcessEnv, executor?: import("../snowflake/executor.mjs").SqlExecutor|null, decide?: import("../decide.mjs").DecideFn|null, connect?: ConnectFn, settleMs?: number, now?: () => number, sleep?: (ms: number) => Promise<void>, store?: import("./state.mjs").RecordStore|null, lock?: ((input: {dir: string, pid?: number, bootId?: string|null, now: () => number, staleMs?: number}) => Promise<import("./state.mjs").LockResult>)|null, bootId?: string|null, runReport?: ((io: NonNullable<Parameters<typeof runReportJob>[0]> & {reportNow: number}) => Promise<ReportResult>)|null}} [io]
  * @returns {Promise<DailyResult>}
  */
 export async function runDailyJob({

@@ -4,12 +4,11 @@
  * directory (on a deployment, a systemd StateDirectory or similar).
  *
  * Idempotency contract: a record exists only after the Slack send was
- * verified (or the report's own duplicate marker was found in the channel,
- * which means a verified send happened in some earlier run). A record is
- * written atomically (temp file + rename in the same directory) so a crash
- * can leave either the old or the new state, never a torn one. A corrupt or
- * unreadable record is an error, never silently ignored: fail closed rather
- * than risk a second post for the same date.
+ * verified. A duplicate marker is not sufficient because it may be present
+ * in an unposted draft. A record is written atomically (temp file + rename in
+ * the same directory) so a crash can leave either the old or the new state,
+ * never a torn one. A corrupt or unreadable record is an error, never silently
+ * ignored: fail closed rather than risk a second post for the same date.
  *
  * Lock contract: O_EXCL create of `<stateDir>/run.lock` holding the holder
  * pid, start instant, and the kernel boot id. A lock is stale - and may be
