@@ -217,14 +217,16 @@ profile already recognized, followed by deterministic validation in code.
   is `text_mismatch`. After sending, the workflow waits for the composer to be
   empty and the exact text to appear on the page; otherwise the status is
   `unverified`.
-- **Caller guards for scheduled posts.** A caller may pass two extra
+- **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
   unless the requested name is exactly the leading name of the chosen link's
   accessible name (decoration such as `(channel)` or `, 3 unread` may follow;
   `qa2-metrics-old` never matches `qa2-metrics`), and `duplicateMarker`
-  refuses (`duplicate_post`) to draft or send when the destination page
-  already shows a node whose text contains the marker. `jev-cu-report` always
-  sets both.
+  refuses (`duplicate_post`) to draft or send when the destination's currently
+  rendered accessibility tree contains the marker. This duplicate check is
+  best-effort defense in depth: virtualized history may omit an earlier post,
+  and concurrent runs can both pass the non-atomic check. `jev-cu-report`
+  always sets both guards.
 - **Never a real Slack mutation in tests or smoke.** All tests use a fake CDP
   session over a synthetic page model, and the live-transport smoke uses a
   local synthetic page. A real Slack post requires a later, explicit
@@ -405,8 +407,9 @@ All dates are UTC calendar days. With the current clock:
   positive, else `flat`.
 - **idempotencyKey**: `unity-new-users:<GAME_ID>:<ENVIRONMENT_ID>:<reportDate>`.
   It is part of the message text and is the `duplicateMarker` handed to the
-  Slack workflow, so re-running the job for the same day refuses instead of
-  posting twice.
+  Slack workflow. The workflow refuses when that key is visible in the
+  currently rendered accessibility tree, but this is not durable exactly-once
+  delivery.
 
 Message (plain text, no mrkdwn, no mentions, no links; identical input gives
 identical output):
@@ -471,8 +474,8 @@ Send, only with an explicit request and an exact allowlist, through the
 `jev-cu-browse` workflow (Chrome with remote debugging, `TYPESAFE_API_KEY` in
 the environment). The destination must equal one `--allow-destination`
 character for character; the workflow then additionally requires the chosen
-sidebar link to name it exactly, refuses if the channel already shows the
-day's idempotency key, and keeps every freshness, read-back, and
+sidebar link to name it exactly, refuses if the currently rendered channel
+content shows the day's idempotency key, and keeps every freshness, read-back, and
 post-verification guard:
 
 ```sh
@@ -523,4 +526,6 @@ A live read-only smoke (two `SELECT`s under process-scoped credentials, no
 Slack) is the remaining validation once the Unity share has propagated; it is
 not part of CI. The daily schedule, deployment host, long-lived credentials,
 the real channel name, and the first real post are separate, explicitly
-authorized steps.
+authorized steps. Before unattended scheduling is activated, its deployment
+must serialize executions and add durable idempotency; the rendered-page check
+alone cannot prevent duplicates from concurrent runs or unloaded history.

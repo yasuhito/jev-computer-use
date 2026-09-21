@@ -167,7 +167,7 @@ test("send mode posts the exact rendered message through the bounded workflow an
   assert.deepEqual(executor.calls.map((s) => s.name), ["account_games", "new_users_by_start_date"]);
 });
 
-test("send mode refuses a second post for the same report day without touching the composer", async () => {
+test("send mode refuses when the rendered channel contains the report key without touching the composer", async () => {
   const c = await captureFixtureIo(["--mode", "send", "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"], {
     decide: decideByLabel(SEND_FLOW),
   });

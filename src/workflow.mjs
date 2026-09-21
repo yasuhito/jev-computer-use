@@ -227,8 +227,8 @@ function composerHolds(snapshot, composerBackendNodeId, text) {
  * name of the chosen destination's accessible name (see
  * destinationNameMatches), so an allowlisted name is never satisfied by a
  * merely similar label; `duplicateMarker` refuses to draft or send when the
- * destination page already shows a node whose text contains the marker (an
- * idempotency key for a scheduled post).
+ * destination's currently rendered accessibility tree contains the marker.
+ * This is a best-effort preflight guard, not durable or atomic idempotency.
  *
  * @param {{mode: Mode, destination: string|null, text?: string|null, adapter: CdpAdapter, decide: DecideFn|null, threshold?: number, maxCandidates: number, exactDestination?: boolean, duplicateMarker?: string|null}} input
  * @returns {Promise<WorkflowReport>}

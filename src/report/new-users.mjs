@@ -14,9 +14,8 @@
  * - trend: against the trailing 7-day average; "flat" when the absolute
  *   deltaPercent is at most FLAT_BAND_PERCENT, "up"/"down" by sign; when
  *   the average is 0, "up" if the day is positive, else "flat".
- * - idempotencyKey: one value per (game, environment, reportDate); a
- *   re-run for the same day produces the same key, so a post carrying it
- *   can be recognized and not repeated.
+ * - idempotencyKey: one value per (game, environment, reportDate), enabling
+ *   duplicate checks or durable idempotency outside this pure report module.
  */
 import { addDays, datesBetween, isIsoDate } from "./dates.mjs";
 

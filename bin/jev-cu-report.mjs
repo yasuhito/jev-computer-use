@@ -6,7 +6,8 @@
  * by default stops there (dry-run). Only `--mode send` hands the text to
  * the bounded jev-cu-browse workflow, and only for a destination that is
  * named exactly in the caller's allowlist; the workflow's own destination,
- * freshness, read-back, duplicate, and post-verification guards all apply.
+ * freshness, read-back, rendered-page duplicate, and post-verification guards
+ * all apply.
  *
  * Exit codes: 0 an outcome was produced (dry-run, or any workflow status
  * including refused and unverified), 1 runtime error (snowflake, data,

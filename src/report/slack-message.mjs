@@ -2,8 +2,8 @@
  * Deterministic Slack message text for a NewUsersReport. Plain text (no
  * mrkdwn markup, no mentions, no links), so what is inserted into the
  * composer is exactly what the read-back and post verification compare.
- * The idempotency key is part of the text so a later run can recognize the
- * post. Same report in, same string out; formatting has no locale input.
+ * The idempotency key is part of the text so duplicate defenses can recognize
+ * the post. Same report in, same string out; formatting has no locale input.
  */
 
 /** @typedef {import("./new-users.mjs").NewUsersReport} NewUsersReport */

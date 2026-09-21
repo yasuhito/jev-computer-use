@@ -340,7 +340,7 @@ test("exactDestination refuses before any click when the chosen link does not na
   assert.equal(ok.status, "executed");
 });
 
-test("duplicateMarker refuses to draft when the destination already shows the marker, and is reported in the plan", async () => {
+test("duplicateMarker refuses when the rendered destination contains the marker, and is reported in the plan", async () => {
   const env = setup();
   env.fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", ["earlier post key: job-2026-09-20"]);
   const report = await run(env, { mode: "send", text: TEXT, duplicateMarker: "job-2026-09-20" });
