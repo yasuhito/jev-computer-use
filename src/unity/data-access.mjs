@@ -38,7 +38,8 @@ export const NEW_USERS_BY_START_DATE_STATEMENT = [
 ].join("\n");
 
 export const DEFAULT_GAME_NAME = "QA2";
-export const DEFAULT_ENVIRONMENT_NAME = "live";
+/** Unity names QA2's environments "Live", "staging", and "develop"; only "Live" is reported. Exact, case-sensitive. */
+export const DEFAULT_ENVIRONMENT_NAME = "Live";
 // eslint-disable-next-line no-control-regex
 const NAME_PATTERN = /^[^\s\u0000-\u001F\u007F][^\u0000-\u001F\u007F]{0,199}$/;
 
@@ -116,8 +117,8 @@ function requireInteger(row, column, index, view) {
 }
 
 /**
- * Resolve exactly one (game, environment) pair. Matching is exact on
- * GAME_NAME (the SQL filter is repeated in code) and case-insensitive on
+ * Resolve exactly one (game, environment) pair. Matching is exact and
+ * case-sensitive on both GAME_NAME (the SQL filter is repeated in code) and
  * ENVIRONMENT_NAME; anything other than exactly one row is an error.
  *
  * @param {SqlExecutor} executor
@@ -149,8 +150,7 @@ export async function resolveGameEnvironment(executor, { gameName = DEFAULT_GAME
     });
   }
   const environmentsSeen = games.map((g) => g.environmentName);
-  const wanted = environmentName.toLowerCase();
-  const matches = games.filter((g) => g.environmentName.toLowerCase() === wanted);
+  const matches = games.filter((g) => g.environmentName === environmentName);
   if (matches.length === 0) {
     throw new DataAccessError("environment_not_found", `game "${gameName}" has no environment named "${environmentName}"`, {
       gameName,

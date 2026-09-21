@@ -356,7 +356,7 @@ views and columns this slice uses follow the official reference
 
 | View | Columns used | Purpose |
 | --- | --- | --- |
-| `ACCOUNT_GAMES` | `ACCOUNT_NAME`, `GAME_NAME`, `GAME_ID`, `ENVIRONMENT_NAME`, `ENVIRONMENT_ID`, `UNITY_PROJECT_ID` | resolve QA2 and its live environment at run time; no `GAME_ID` is hard-coded |
+| `ACCOUNT_GAMES` | `ACCOUNT_NAME`, `GAME_NAME`, `GAME_ID`, `ENVIRONMENT_NAME`, `ENVIRONMENT_ID`, `UNITY_PROJECT_ID` | resolve QA2 and its Live environment at run time; no `GAME_ID` is hard-coded |
 | `ACCOUNT_USERS` | `GAME_ID`, `ENVIRONMENT_ID`, `USER_ID`, `START_DATE` (DATE) | one row per user; `START_DATE` is the player's start date, the fact the event and fact views expose as `PLAYER_START_DATE` |
 
 The two statements (`src/unity/data-access.mjs`) are single `SELECT`s with
@@ -381,7 +381,8 @@ ORDER BY START_DATE
 
 Game resolution is code: rows whose `GAME_NAME` equals `QA2` exactly must
 share one `GAME_ID`, and exactly one of them must have
-`ENVIRONMENT_NAME` equal to `live` (compared case-insensitively). Zero
+`ENVIRONMENT_NAME` equal to `Live`, compared exactly and case-sensitively
+(Unity names QA2's environments `Live`, `staging`, and `develop`). Zero
 or several rows at any step is an error
 (`game_not_found`, `ambiguous_game`, `environment_not_found`,
 `ambiguous_environment`); the run never guesses.
@@ -415,7 +416,7 @@ Message (plain text, no mrkdwn, no mentions, no links; identical input gives
 identical output):
 
 ```
-QA2 new users (live) for 2026-09-20 (UTC)
+QA2 new users (Live) for 2026-09-20 (UTC)
 New users on 2026-09-20: 1,234
 vs 2026-09-19 (1,178): +56 (+4.8%)
 vs trailing 7-day avg 2026-09-13..2026-09-19 (1,035.4): +198.6 (+19.2%), trend: up
