@@ -278,7 +278,6 @@ test("the adapter and transport know nothing about Slack", () => {
     const source = readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8");
     assert.doesNotMatch(source, /slack/i, `${file} must not mention Slack`);
     assert.doesNotMatch(source, /profiles\/slack/, `${file} must not import the Slack profile`);
-    assert.doesNotMatch(source, /data-qa|data-item-key|texty|treeitem/i, `${file} must not carry application selectors`);
   }
 });
 

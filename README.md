@@ -241,9 +241,11 @@ profile already recognized, followed by deterministic validation in code.
   session over a synthetic page model, and the live-transport smoke uses a
   local synthetic page. A real Slack post requires a later, explicit
   authorization naming the destination and content (or a separately approved
-  bounded daily-job mandate). The QA2 data source and report calculation are
-  `jev-cu-report` below; the real workspace and channel, schedule, long-lived
-  credentials, and deployment host remain a later, separately authorized step.
+  bounded daily-job mandate). This slice repairs the real-Slack destination
+  recognition failure; the existing Beelink observe-only verification then
+  recognized `qa2` successfully. Scheduling and first-send authority remain
+  separate. The QA2 data source and report calculation are `jev-cu-report`
+  below.
 
 ### Modes
 

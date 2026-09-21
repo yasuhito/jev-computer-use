@@ -10,12 +10,20 @@ import { decideByLabel, decideFixed, fakeClock } from "./helpers.mjs";
 
 const ALLOWED = new Set(ALLOWED_CDP_METHODS);
 const QA2 = "https://app.slack.com/client/T0SYNTH/C0QA2METRICS";
+const TREE_QA2 = "https://app.slack.com/client/T0SYNTH/C0QA2";
 const TEXT = "QA2 daily users: 1234 (+5% vs yesterday)";
 const FULL_FLOW = [/^qa2-metrics/, /^Message #qa2-metrics/, /^Send now/];
 /** The same three choices on the real-shaped (Japanese, tree-sidebar) page. */
-const TREE_FLOW = [/^qa2-metrics \[channel\]$/, /^qa2-metrics へのメッセージ$/, /^メッセージを送信$/];
+const TREE_FLOW = [/^qa2 \[channel\]$/, /^qa2 へのメッセージ$/, /^メッセージを送信$/];
 /** @returns {Parameters<typeof createFakeCdp>[0]} */
-const treeShape = () => ({ page: loadSyntheticPage({ shape: "tree" }) });
+const treeShape = () => {
+  const page = loadSyntheticPage({ shape: "tree" });
+  const qa2 = page.conversations.find((conversation) => conversation.id === "C0QA2METRICS");
+  assert.ok(qa2);
+  qa2.id = "C0QA2";
+  qa2.name = "qa2";
+  return { page };
+};
 const UNTRUSTED_PROFILE = { ...SLACK_PROFILE, name: "untrusted-test", trusted: false };
 
 /**
@@ -383,7 +391,7 @@ test("observe mode on the real-shaped page exposes the channel rows as destinati
     report.candidates?.map((c) => [c.kind, c.role, c.label, c.url]),
     [
       ["destination", "treeitem", "general [channel]", "https://app.slack.com/client/T0SYNTH/C0GENERAL"],
-      ["destination", "treeitem", "qa2-metrics [channel]", QA2],
+      ["destination", "treeitem", "qa2 [channel]", TREE_QA2],
       ["destination", "treeitem", "random [channel]", "https://app.slack.com/client/T0SYNTH/C0RANDOM"],
       ["composer", "textbox", "general へのメッセージ", null],
       ["send", "button", "メッセージを送信", null],
@@ -393,13 +401,13 @@ test("observe mode on the real-shaped page exposes the channel rows as destinati
 });
 
 test("exactDestination on the real-shaped page matches the row's visible name, not its empty accessible name", async () => {
-  const ok = await run(setup(treeShape()), { mode: "navigate", destination: "qa2-metrics", exactDestination: true, decide: decideByLabel(TREE_FLOW) });
+  const ok = await run(setup(treeShape()), { mode: "navigate", destination: "qa2", exactDestination: true, decide: decideByLabel(TREE_FLOW) });
   assert.equal(ok.status, "executed");
   assert.equal(ok.completed, "navigate");
   assert.equal(ok.destination.candidate?.role, "treeitem");
-  assert.equal(ok.destination.candidate?.url, QA2);
+  assert.equal(ok.destination.candidate?.url, TREE_QA2);
   const env = setup(treeShape());
-  const report = await run(env, { mode: "navigate", destination: "qa2-metric", exactDestination: true, decide: decideByLabel(TREE_FLOW) });
+  const report = await run(env, { mode: "navigate", destination: "qa2-wrong", exactDestination: true, decide: decideByLabel(TREE_FLOW) });
   assert.equal(report.status, "refused");
   assert.equal(report.refusal?.code, "destination_mismatch");
   assertNoInput(env.fake);
@@ -407,16 +415,16 @@ test("exactDestination on the real-shaped page matches the row's visible name, n
 
 test("send mode on the real-shaped page drafts through the localized composer and clicks the localized send button once", async () => {
   const env = setup(treeShape());
-  const report = await run(env, { mode: "send", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
+  const report = await run(env, { mode: "send", destination: "qa2", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
   assert.equal(report.status, "executed");
   assert.equal(report.completed, "send");
   assert.deepEqual(env.fake.currentMessages(), [TEXT]);
-  assert.equal(env.fake.currentUrl(), QA2);
+  assert.equal(env.fake.currentUrl(), TREE_QA2);
   assert.equal(env.fake.clicks().length, 3);
   assert.deepEqual(env.fake.state.sideEffects, []);
   assert.ok(env.fake.calls.every((c) => ALLOWED.has(c.method)));
   // The second run sees the marker and refuses before typing.
-  const again = await run(env, { mode: "send", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
+  const again = await run(env, { mode: "send", destination: "qa2", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
   assert.equal(again.status, "refused");
   assert.equal(again.refusal?.code, "duplicate_post");
 });
@@ -424,13 +432,13 @@ test("send mode on the real-shaped page drafts through the localized composer an
 test("on the real-shaped page a renamed row or a row whose key changed refuses before the click", async () => {
   const env = setup(treeShape());
   const first = await env.adapter.observe();
-  const qa2 = first.candidates.find((c) => c.label === "qa2-metrics [channel]");
+  const qa2 = first.candidates.find((c) => c.label === "qa2 [channel]");
   assert.ok(qa2);
-  const conv = env.fake.page.conversations.find((c) => c.id === "C0QA2METRICS");
+  const conv = env.fake.page.conversations.find((c) => c.id === "C0QA2");
   assert.ok(conv);
-  conv.name = "qa2-metrics-renamed";
+  conv.name = "qa2-renamed";
   await assert.rejects(env.adapter.click(first, qa2.id), (/** @type {{code: string}} */ err) => err.code === "changed_state");
-  conv.name = "qa2-metrics";
+  conv.name = "qa2";
   conv.id = "C0MOVED";
   await assert.rejects(env.adapter.click(first, qa2.id), (/** @type {{code: string}} */ err) => err.code === "changed_state");
   assertNoInput(env.fake);
