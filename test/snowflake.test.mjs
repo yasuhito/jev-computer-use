@@ -86,7 +86,7 @@ test("decodeCell follows the SQL API encoding: DATE as epoch days, FIXED as inte
 test("decodeRows keys cells by column and rejects ragged rows", () => {
   const rows = decodeRows({
     columns: [
-      { name: "PLAYER_START_DATE", type: "DATE" },
+      { name: "START_DATE", type: "DATE" },
       { name: "NEW_USERS", type: "FIXED" },
     ],
     rows: [
@@ -95,8 +95,8 @@ test("decodeRows keys cells by column and rejects ragged rows", () => {
     ],
   });
   assert.deepEqual(rows, [
-    { PLAYER_START_DATE: "2026-09-20", NEW_USERS: 1234 },
-    { PLAYER_START_DATE: "2026-09-19", NEW_USERS: null },
+    { START_DATE: "2026-09-20", NEW_USERS: 1234 },
+    { START_DATE: "2026-09-19", NEW_USERS: null },
   ]);
   assert.throws(() => decodeRows({ columns: [{ name: "A", type: "TEXT" }], rows: [["1", "2"]] }), /cells for 1 columns/);
 });

@@ -357,7 +357,7 @@ views and columns this slice uses follow the official reference
 | View | Columns used | Purpose |
 | --- | --- | --- |
 | `ACCOUNT_GAMES` | `ACCOUNT_NAME`, `GAME_NAME`, `GAME_ID`, `ENVIRONMENT_NAME`, `ENVIRONMENT_ID`, `UNITY_PROJECT_ID` | resolve QA2 and its Live environment at run time; no `GAME_ID` is hard-coded |
-| `ACCOUNT_USERS` | `GAME_ID`, `ENVIRONMENT_ID`, `USER_ID`, `START_DATE` (DATE) | one row per user; `START_DATE` is the player's start date, the fact the event and fact views expose as `PLAYER_START_DATE` |
+| `ACCOUNT_USERS` | `GAME_ID`, `ENVIRONMENT_ID`, `USER_ID`, `START_DATE` (DATE) | one row per user; `START_DATE` is the player's start date and the only such column `ACCOUNT_USERS` has. The event and fact views expose the same fact as `PLAYER_START_DATE`, a name `ACCOUNT_USERS` does not have: referencing it there fails Snowflake compilation with `invalid identifier` |
 
 The two statements (`src/unity/data-access.mjs`) are single `SELECT`s with
 positional bindings; the database, schema, warehouse, and role travel as
@@ -371,7 +371,7 @@ ORDER BY GAME_ID, ENVIRONMENT_ID
 ```
 
 ```sql
-SELECT START_DATE AS PLAYER_START_DATE, COUNT(DISTINCT USER_ID) AS NEW_USERS
+SELECT START_DATE, COUNT(DISTINCT USER_ID) AS NEW_USERS
 FROM ACCOUNT_USERS
 WHERE GAME_ID = ? AND ENVIRONMENT_ID = ?
   AND START_DATE >= TO_DATE(?, 'YYYY-MM-DD') AND START_DATE < TO_DATE(?, 'YYYY-MM-DD')
@@ -519,8 +519,13 @@ failure mode, the report arithmetic, the message, and the CLI end to end with
 the fake CDP session over the synthetic Slack page: a send that posts the
 exact message, a duplicate refusal, and an exact-destination refusal.
 `test/fixtures/unity-data-access.json` records result sets
-in the SQL API encoding with the official column names; it is synthetic data,
-not a real account. Tests inject that fixture executor and a fixed clock
+in the SQL API encoding with the official column names, plus the official
+source-side columns of the two views (`schema`); the schema compile test
+resolves every identifier and binding of the generated statements against
+it, so a query naming a column the views do not have (as a shipped
+`PLAYER_START_DATE` form did, failing real compilation with `invalid
+identifier`) fails offline. The fixture data is synthetic, not a real
+account. Tests inject that fixture executor and a fixed clock
 through the programmatic CLI seam, so the test suite touches neither Snowflake
 nor Slack.
 
