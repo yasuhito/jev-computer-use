@@ -37,14 +37,13 @@ import { renderSlackMessage, DEFAULT_SERIES_DAYS } from "../src/report/slack-mes
 const TOOL = "jev-cu-report";
 const VERSION = "0.1.0";
 
-export const REPORT_MODES = Object.freeze(["dry-run", "draft", "send"]);
-/** @typedef {"dry-run"|"draft"|"send"} ReportMode */
+export const REPORT_MODES = Object.freeze(["dry-run", "send"]);
+/** @typedef {"dry-run"|"send"} ReportMode */
 export const SOURCES = Object.freeze(["snowflake", "fixture"]);
 
 const VALUE_FLAGS = new Set([
   "--source",
   "--fixture",
-  "--game",
   "--environment",
   "--days",
   "--series-days",
@@ -70,7 +69,6 @@ bounded workflow, only to a destination named in --allow-destination.
 Data options:
   --source KIND         ${SOURCES.join(" | ")} (default snowflake; snowflake reads SNOWFLAKE_* from the environment)
   --fixture FILE        recorded result sets for --source fixture
-  --game NAME           GAME_NAME to resolve in ACCOUNT_GAMES (default ${DEFAULT_GAME_NAME})
   --environment NAME    ENVIRONMENT_NAME to select (default ${DEFAULT_ENVIRONMENT_NAME})
   --days N              complete UTC days in the window, ${MIN_WINDOW_DAYS}..${MAX_WINDOW_DAYS} (default ${DEFAULT_WINDOW_DAYS})
   --series-days N       days shown in the message series, 1..days (default ${DEFAULT_SERIES_DAYS})
@@ -78,7 +76,7 @@ Data options:
 
 Delivery options:
   --mode MODE           ${REPORT_MODES.join(" | ")} (default dry-run)
-  --destination NAME    Slack channel name, exactly as the sidebar shows it (draft and send)
+  --destination NAME    Slack channel name, exactly as the sidebar shows it (send only)
   --allow-destination NAME
                         allowlisted destination; repeatable; --destination must match one exactly
   --profile NAME        ${[...PROFILES.keys()].join(" | ")} (default ${DEFAULT_PROFILE_NAME})
@@ -92,14 +90,13 @@ Delivery options:
 Environment: SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PRIVATE_KEY_PATH,
   SNOWFLAKE_WAREHOUSE, SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA (required for
   --source snowflake; optional SNOWFLAKE_ROLE, SNOWFLAKE_PRIVATE_KEY_PASSPHRASE,
-  SNOWFLAKE_HOST); TYPESAFE_API_KEY (draft and send). Never printed or stored.
+  SNOWFLAKE_HOST); TYPESAFE_API_KEY (send only). Never printed or stored.
 Exit codes: 0 outcome, 1 runtime error, 2 usage error.`;
 
 /**
  * @typedef {object} Options
  * @property {"snowflake"|"fixture"} source
  * @property {string|null} fixture
- * @property {string} game
  * @property {string} environment
  * @property {number} days
  * @property {number} seriesDays
@@ -126,7 +123,6 @@ export function parseArgs(argv) {
   const options = {
     source: "snowflake",
     fixture: null,
-    game: DEFAULT_GAME_NAME,
     environment: DEFAULT_ENVIRONMENT_NAME,
     days: DEFAULT_WINDOW_DAYS,
     seriesDays: DEFAULT_SERIES_DAYS,
@@ -166,7 +162,7 @@ export function parseArgs(argv) {
     if (!VALUE_FLAGS.has(flag)) throw new Error(`unknown option "${arg}"`);
     if (inline === undefined) {
       const next = argv[i + 1];
-      const nameFlag = flag === "--destination" || flag === "--allow-destination" || flag === "--game" || flag === "--environment";
+      const nameFlag = flag === "--destination" || flag === "--allow-destination" || flag === "--environment";
       if (next === undefined || (next.startsWith("--") && !nameFlag)) throw new Error(`${flag} requires a value`);
       inline = next;
       i += 1;
@@ -178,9 +174,6 @@ export function parseArgs(argv) {
         break;
       case "--fixture":
         options.fixture = inline;
-        break;
-      case "--game":
-        options.game = inline;
         break;
       case "--environment":
         options.environment = inline;
@@ -318,7 +311,7 @@ export async function runCli({
       stderr.write(`${USAGE}\n`);
       return 0;
     }
-    const gameName = validateName(options.game, "--game");
+    const gameName = DEFAULT_GAME_NAME;
     const environmentName = validateName(options.environment, "--environment");
     const destination = options.destination === null ? null : assertAllowlisted(options.destination, options.allowDestinations);
 
@@ -365,7 +358,7 @@ export async function runCli({
       writeOut({ ...base, status: "dry-run", send: null });
       return 0;
     }
-    if (destination === null || decideFn === null) throw new Error("draft and send need a destination and a decision dependency");
+    if (destination === null || decideFn === null) throw new Error("send needs a destination and a decision dependency");
 
     session = await connect({ endpoint: options.cdp, targetId: options.target, profile });
     const adapter = new CdpAdapter({

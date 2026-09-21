@@ -377,8 +377,8 @@ GROUP BY START_DATE
 ORDER BY START_DATE
 ```
 
-Game resolution is code: rows whose `GAME_NAME` equals `--game` exactly
-(default `QA2`) must share one `GAME_ID`, and exactly one of them must have
+Game resolution is code: rows whose `GAME_NAME` equals `QA2` exactly must
+share one `GAME_ID`, and exactly one of them must have
 `ENVIRONMENT_NAME` equal to `--environment` (default `production`, compared
 case-insensitively). Zero or several rows at any step is an error
 (`game_not_found`, `ambiguous_game`, `environment_not_found`,
@@ -485,21 +485,19 @@ post-verification guard:
 node bin/jev-cu-report.mjs --mode send --destination qa2-metrics --allow-destination qa2-metrics
 ```
 
-`--mode draft` leaves the exact text in the composer without sending, for a
-rehearsal. Options:
+Options:
 
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `--source KIND` | `snowflake` or `fixture` | `snowflake` |
 | `--fixture FILE` | recorded result sets (with `--source fixture`) | |
-| `--game NAME` | `GAME_NAME` to resolve | `QA2` |
 | `--environment NAME` | `ENVIRONMENT_NAME` to select | `production` |
 | `--days N` | complete UTC days in the window, 8..90 | `14` |
 | `--series-days N` | days shown in the message series, 1..days | `7` |
 | `--now ISO` | freeze the clock (ISO-8601 instant with zone) | real time |
-| `--mode MODE` | `dry-run`, `draft`, `send` | `dry-run` |
-| `--destination NAME` | Slack channel, exactly as the sidebar names it | required for draft and send |
-| `--allow-destination NAME` | exact allowlist entry; repeatable | required for draft and send |
+| `--mode MODE` | `dry-run`, `send` | `dry-run` |
+| `--destination NAME` | Slack channel, exactly as the sidebar names it | required for send |
+| `--allow-destination NAME` | exact allowlist entry; repeatable | required for send |
 | `--profile`, `--cdp`, `--target`, `--min-confidence`, `--max-candidates`, `--model` | as in `jev-cu-browse` | same defaults |
 
 ### Output
@@ -509,7 +507,7 @@ requested game and environment, and the window), `report` (the typed report:
 `game`, `window`, `reportDate`, `previousDay`, `series`, `missingDates`,
 `comparison`, `idempotencyKey`), `message` (the exact text), `delivery`
 (destination, allowlist, and the two guards), `status`, and `send`. In
-dry-run `status` is `dry-run` and `send` is null. In draft and send modes
+dry-run `status` is `dry-run` and `send` is null. In send mode
 `send` is the full `jev-cu-browse` report and `status` repeats its status
 (`executed`, `refused`, `unverified`, `no_match`, `escalate`).
 
@@ -526,8 +524,8 @@ against the generated public key), the REST executor with a scripted fetch
 (polling, partitions, retries, auth failures), game resolution and every
 failure mode, the report arithmetic, the message, and the CLI end to end with
 the fake CDP session over the synthetic Slack page: a send that posts the
-exact message, a duplicate refusal, an exact-destination refusal, and a draft
-that never sends. `test/fixtures/unity-data-access.json` records result sets
+exact message, a duplicate refusal, and an exact-destination refusal.
+`test/fixtures/unity-data-access.json` records result sets
 in the SQL API encoding with the official column names; it is synthetic data,
 not a real account. Nothing in the test suite or the dry-run touches Snowflake
 or Slack.

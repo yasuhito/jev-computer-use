@@ -45,7 +45,6 @@ test("parseArgs defaults to a snowflake dry-run and validates every flag", () =>
   const o = parseArgs([]);
   assert.equal(o.source, "snowflake");
   assert.equal(o.mode, "dry-run");
-  assert.equal(o.game, "QA2");
   assert.equal(o.environment, "production");
   assert.equal(o.days, 14);
   assert.equal(o.seriesDays, 7);
@@ -61,6 +60,8 @@ test("parseArgs defaults to a snowflake dry-run and validates every flag", () =>
   assert.throws(() => parseArgs(["--mode", "send", "--destination", "a"]), /requires at least one --allow-destination/);
   assert.throws(() => parseArgs(["--mode", "send", "--allow-destination", "a"]), /requires --destination/);
   assert.throws(() => parseArgs(["--mode", "observe"]), /--mode must be one of/);
+  assert.throws(() => parseArgs(["--mode", "draft"]), /--mode must be one of/);
+  assert.throws(() => parseArgs(["--game", "other"]), /unknown option/);
   assert.throws(() => parseArgs(["--post"]), /unknown option/);
 });
 
@@ -194,18 +195,6 @@ test("send mode refuses when the chosen destination is not named exactly as requ
   assert.equal(payload.send.refusal.code, "destination_mismatch");
   assert.equal(payload.send.completed, null);
   assert.equal(c.fake.clicks().length, 0);
-  assert.deepEqual(c.fake.currentMessages(), []);
-});
-
-test("draft mode leaves the exact message in the composer and never sends", async () => {
-  const c = captureIo([...FIXTURE_ARGS, "--mode", "draft", "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"], {
-    decide: decideByLabel([/^qa2-metrics/, /^Message #qa2-metrics/]),
-  });
-  assert.equal(await runCli(c.io), 0);
-  const payload = c.json();
-  assert.equal(payload.status, "executed");
-  assert.equal(payload.send.completed, "draft");
-  assert.equal(c.fake.currentDraft(), payload.message);
   assert.deepEqual(c.fake.currentMessages(), []);
 });
 
