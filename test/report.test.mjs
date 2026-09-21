@@ -54,6 +54,7 @@ test("statements are read-only, bound positionally, and resolve the game by name
   assert.match(ACCOUNT_GAMES_STATEMENT, /FROM ACCOUNT_GAMES/);
   assert.match(ACCOUNT_GAMES_STATEMENT, /WHERE GAME_NAME = \?/);
   assert.match(NEW_USERS_BY_START_DATE_STATEMENT, /COUNT\(DISTINCT USER_ID\) AS NEW_USERS/);
+  assert.match(NEW_USERS_BY_START_DATE_STATEMENT, /START_DATE AS PLAYER_START_DATE/);
   assert.match(NEW_USERS_BY_START_DATE_STATEMENT, /GROUP BY START_DATE/);
   assert.doesNotMatch(NEW_USERS_BY_START_DATE_STATEMENT, /\d{4}-\d{2}-\d{2}|24601/);
   assert.deepEqual(accountGamesStatement("QA2").bindings, [{ type: "TEXT", value: "QA2" }]);
@@ -125,7 +126,7 @@ test("fetchNewUsersByStartDate validates and sorts rows and rejects data outside
   assert.deepEqual(rows[0], { date: "2026-09-07", newUsers: 1100 });
   assert.deepEqual(rows[12], { date: "2026-09-20", newUsers: 1234 });
   const columns = [
-    { name: "START_DATE", type: "DATE" },
+    { name: "PLAYER_START_DATE", type: "DATE" },
     { name: "NEW_USERS", type: "FIXED" },
   ];
   /** @param {Array<Array<string|null>>} data */
@@ -139,7 +140,7 @@ test("fetchNewUsersByStartDate validates and sorts rows and rejects data outside
   await assert.rejects(withRows([["20716", "5"], ["20716", "6"]]), /repeat the date/);
   await assert.rejects(withRows([["20717", "5"]]), (/** @type {DataAccessError} */ err) => err.code === "unexpected_row");
   await assert.rejects(withRows([["20716", "-1"]]), /negative/);
-  await assert.rejects(withRows([[null, "1"]]), /no START_DATE/);
+  await assert.rejects(withRows([[null, "1"]]), /no PLAYER_START_DATE/);
   assert.deepEqual(await withRows([["20716", "5"], ["20710", "3"]]), [
     { date: "2026-09-14", newUsers: 3 },
     { date: "2026-09-20", newUsers: 5 },

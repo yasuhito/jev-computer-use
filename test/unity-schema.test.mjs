@@ -27,11 +27,7 @@ class CompilationError extends Error {
 
 /**
  * Recreate, against the official schema, the compilation Snowflake runs
- * before any statement executes. Real-Snowflake evidence behind this check:
- * the earlier PLAYER_START_DATE form failed with `SQL compilation error:
- * error line 6 at position 13 invalid identifier 'USERS.PLAYER_START_DATE'`
- * while the corrected ACCOUNT_USERS.START_DATE form returned UTC-day rows
- * for the same window. This stand-in is specialised to the single-SELECT
+ * before any statement executes. This stand-in is specialised to the single-SELECT
  * shape this slice sends (one view, no joins or subqueries) and checks the
  * two things that stage checks first: every identifier must resolve to a
  * column of the queried view (or an alias the query itself defines), and

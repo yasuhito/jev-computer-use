@@ -45,9 +45,9 @@
       ]
     },
     "new_users_by_start_date": {
-      "_note": "Response to the ACCOUNT_USERS aggregate for GAME_ID 24601, ENVIRONMENT_ID 31001, [2026-09-07, 2026-09-21). The date column is named START_DATE because the statement selects ACCOUNT_USERS.START_DATE with no alias. 2026-09-13 (20709) has no row on purpose.",
+      "_note": "Response to the ACCOUNT_USERS aggregate for GAME_ID 24601, ENVIRONMENT_ID 31001, [2026-09-07, 2026-09-21). 2026-09-13 (20709) has no row on purpose.",
       "columns": [
-        { "name": "START_DATE", "type": "DATE" },
+        { "name": "PLAYER_START_DATE", "type": "DATE" },
         { "name": "NEW_USERS", "type": "FIXED" }
       ],
       "rows": [

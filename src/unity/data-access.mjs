@@ -11,13 +11,9 @@
  * GAME_ID) and exactly one environment row is selected in code. New users
  * per day are COUNT(DISTINCT USER_ID) grouped by the player's start date:
  * ACCOUNT_USERS holds one row per user whose START_DATE is that user's
- * player start date. START_DATE is the authoritative column name in
- * ACCOUNT_USERS; the event and fact views expose the same fact as
- * PLAYER_START_DATE, a name ACCOUNT_USERS does not have, so the query uses
- * START_DATE directly (the player_start_date alias previously shipped here
- * failed real compilation with `invalid identifier 'USERS.PLAYER_START_DATE'`).
- * Every statement is a single SELECT with positional bindings; identifiers
- * are never interpolated.
+ * player start date (the same fact the event and fact views expose as
+ * PLAYER_START_DATE); the query aliases it accordingly. Every statement is a
+ * single SELECT with positional bindings; identifiers are never interpolated.
  */
 import { isIsoDate } from "../report/dates.mjs";
 import { decodeRows } from "../snowflake/executor.mjs";
@@ -33,7 +29,7 @@ export const ACCOUNT_GAMES_STATEMENT = [
 ].join("\n");
 
 export const NEW_USERS_BY_START_DATE_STATEMENT = [
-  "SELECT START_DATE, COUNT(DISTINCT USER_ID) AS NEW_USERS",
+  "SELECT START_DATE AS PLAYER_START_DATE, COUNT(DISTINCT USER_ID) AS NEW_USERS",
   "FROM ACCOUNT_USERS",
   "WHERE GAME_ID = ? AND ENVIRONMENT_ID = ?",
   "  AND START_DATE >= TO_DATE(?, 'YYYY-MM-DD') AND START_DATE < TO_DATE(?, 'YYYY-MM-DD')",
@@ -194,7 +190,7 @@ export function newUsersByStartDateStatement({ gameId, environmentId, start, end
 
 /**
  * @typedef {object} DailyNewUsers
- * @property {string} date START_DATE as YYYY-MM-DD (UTC calendar day)
+ * @property {string} date PLAYER_START_DATE as YYYY-MM-DD (UTC calendar day)
  * @property {number} newUsers COUNT(DISTINCT USER_ID)
  */
 
@@ -212,9 +208,9 @@ export async function fetchNewUsersByStartDate(executor, input) {
   /** @type {Map<string, number>} */
   const byDate = new Map();
   rows.forEach((row, i) => {
-    const date = row.START_DATE;
+    const date = row.PLAYER_START_DATE;
     if (typeof date !== "string" || !isIsoDate(date)) {
-      throw new DataAccessError("invalid_row", `new-users row ${i} has no START_DATE date`, { row: i });
+      throw new DataAccessError("invalid_row", `new-users row ${i} has no PLAYER_START_DATE date`, { row: i });
     }
     const count = requireInteger(row, "NEW_USERS", i, "new-users");
     if (count < 0) throw new DataAccessError("invalid_row", `new-users row ${i} has a negative count`, { row: i });
