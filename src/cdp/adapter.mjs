@@ -3,9 +3,10 @@
  * and a Chrome DevTools Protocol page target.
  *
  * It knows only generic browser concepts: a page target, its accessibility
- * tree reduced to role/name/url/value facts, box models, hit testing, and two
- * typed input actions (a single left click, and inserting exact text into the
- * focused editable). Application semantics (which links are destinations,
+ * tree reduced to role/name/contents/url/value facts, element attributes for
+ * the roles a profile asks for, box models, hit testing, and two typed input
+ * actions (a single left click, and inserting exact text into the focused
+ * editable). Application semantics (which links or rows are destinations,
  * which textbox is a composer, which button sends) and permissions come from
  * an injected Profile; the adapter enforces the profile but never extends it.
  *
@@ -82,15 +83,22 @@ export const DEFAULT_SETTLE_MS = 5_000;
 export const DEFAULT_SETTLE_POLL_MS = 100;
 /** Bound on the raw value text kept per node. */
 export const MAX_VALUE_LENGTH = 8_000;
+/**
+ * Bound on the nodes whose element attributes one observation may fetch
+ * (one DOM.describeNode each); beyond it the observation is refused rather
+ * than made unboundedly slow by a page full of the profile's attribute roles.
+ */
+export const MAX_ATTRIBUTE_LOOKUPS = 256;
 
 /** @param {number} ms */
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * @param {unknown} raw
+ * @param {string} contentText
  * @returns {ObservedNode|null}
  */
-function reduceAxNode(raw) {
+function reduceAxNode(raw, contentText) {
   if (typeof raw !== "object" || raw === null) return null;
   const node = /** @type {Record<string, any>} */ (raw);
   if (node.ignored === true) return null;
@@ -112,7 +120,75 @@ function reduceAxNode(raw) {
       else if (propertyName === "focused") focused = propertyValue === true;
     }
   }
-  return { backendNodeId, role, name, url, value, disabled, focused };
+  return { backendNodeId, role, name, contentText, url, value, disabled, focused, attributes: {} };
+}
+
+/**
+ * Reduce a full accessibility tree to observed nodes. The contents text of a
+ * node is the whitespace-joined text of its static-text descendants, walked
+ * through ignored nodes too, since the browser may leave a container's
+ * accessible name empty while its visible text sits below it.
+ *
+ * @param {unknown[]} rawNodes
+ * @returns {ObservedNode[]}
+ */
+function reduceAxTree(rawNodes) {
+  /** @type {Map<string, Record<string, any>>} */
+  const byId = new Map();
+  for (const raw of rawNodes) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const node = /** @type {Record<string, any>} */ (raw);
+    if (typeof node.nodeId === "string") byId.set(node.nodeId, node);
+  }
+  /** @type {Map<string, string>} */
+  const memo = new Map();
+  /** @param {string} nodeId */
+  const contentText = (nodeId) => {
+    const known = memo.get(nodeId);
+    if (known !== undefined) return known;
+    memo.set(nodeId, ""); // cycle guard; the tree has none but the protocol does not promise it
+    const node = byId.get(nodeId);
+    let text = "";
+    if (node) {
+      const role = typeof node.role?.value === "string" ? node.role.value.toLowerCase() : "";
+      if (role === "statictext") {
+        text = typeof node.name?.value === "string" ? node.name.value : "";
+      } else if (Array.isArray(node.childIds)) {
+        text = node.childIds
+          .map((childId) => (typeof childId === "string" ? contentText(childId) : ""))
+          .filter((part) => part.length > 0)
+          .join(" ");
+      }
+    }
+    text = sanitizeLabel(text);
+    memo.set(nodeId, text);
+    return text;
+  };
+  /** @type {ObservedNode[]} */
+  const nodes = [];
+  for (const raw of rawNodes) {
+    const nodeId = typeof raw === "object" && raw !== null ? /** @type {Record<string, any>} */ (raw).nodeId : undefined;
+    const node = reduceAxNode(raw, typeof nodeId === "string" ? contentText(nodeId) : "");
+    if (node) nodes.push(node);
+  }
+  return nodes;
+}
+
+/**
+ * @param {unknown} described a DOM.Node from DOM.describeNode
+ * @returns {Record<string, string>}
+ */
+function reduceAttributes(described) {
+  /** @type {Record<string, string>} */
+  const attributes = {};
+  const flat = typeof described === "object" && described !== null ? /** @type {Record<string, any>} */ (described).attributes : null;
+  if (!Array.isArray(flat)) return attributes;
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    const name = flat[i];
+    const value = flat[i + 1];
+    if (typeof name === "string" && typeof value === "string") attributes[name] = value;
+  }
+  return attributes;
 }
 
 /**
@@ -264,14 +340,24 @@ export class CdpAdapter {
     }
     await this.#send("DOM.getDocument", { depth: 0 });
     const { nodes } = await this.#send("Accessibility.getFullAXTree");
-    const rawNodes = Array.isArray(nodes) ? nodes : [];
+    const observed = reduceAxTree(Array.isArray(nodes) ? nodes : []);
+    const attributeRoles = this.#profile.attributeRoles;
+    if (attributeRoles !== undefined && attributeRoles.size > 0) {
+      const wanting = observed.filter((node) => attributeRoles.has(node.role));
+      if (wanting.length > MAX_ATTRIBUTE_LOOKUPS) {
+        throw new RefusalError(
+          "too_many_candidates",
+          `${wanting.length} nodes carry the profile's attribute roles; the bound is ${MAX_ATTRIBUTE_LOOKUPS}`,
+        );
+      }
+      for (const node of wanting) {
+        const { node: described } = await this.#send("DOM.describeNode", { backendNodeId: node.backendNodeId, depth: 0 });
+        node.attributes = Object.freeze(reduceAttributes(described));
+      }
+    }
     /** @type {Candidate[]} */
     const candidates = [];
-    let nodeCount = 0;
-    for (const raw of rawNodes) {
-      const node = reduceAxNode(raw);
-      if (!node) continue;
-      nodeCount += 1;
+    for (const node of observed) {
       const recognized = this.#profile.recognize(node, target);
       if (!recognized) continue;
       if (candidates.length >= this.#maxCandidates) {
@@ -285,18 +371,19 @@ export class CdpAdapter {
         kind: recognized.kind,
         role: node.role,
         label: sanitizeLabel(recognized.label),
-        name: node.name,
-        url: node.url,
+        name: recognized.name === undefined ? node.name : sanitizeLabel(recognized.name),
+        url: recognized.url === undefined ? node.url : recognized.url,
         value: node.value,
         disabled: node.disabled,
         backendNodeId: node.backendNodeId,
+        attributes: node.attributes,
       });
     }
     return {
       target,
       observedAt: this.#now(),
       profile: this.#profile.name,
-      nodeCount,
+      nodeCount: observed.length,
       candidates,
       digest: digestCandidates(candidates),
     };
@@ -545,7 +632,7 @@ export class CdpAdapter {
     /** @type {number[]} */
     const backendNodeIds = [];
     for (const raw of Array.isArray(nodes) ? nodes : []) {
-      const node = reduceAxNode(raw);
+      const node = reduceAxNode(raw, "");
       if (!node) continue;
       const name = typeof raw?.name?.value === "string" ? sanitizeLabel(raw.name.value, MAX_VALUE_LENGTH) : "";
       const hit = match === "contains" ? name.includes(wanted) : name === wanted;

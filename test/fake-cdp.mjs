@@ -2,8 +2,9 @@
  * Fake page-bound CDP session backed by the synthetic Slack page model. It
  * answers exactly the CDP methods a well-behaved adapter needs and throws on
  * anything else, so tests prove which methods are sent. Input events mutate
- * the model the way the real page would (link click navigates, composer
- * click focuses, insertText appends to the focused textbox, send posts).
+ * the model the way the real page would (link or sidebar-row click
+ * navigates, composer click focuses, insertText appends to the focused
+ * textbox, send posts).
  */
 import { TransportError, CdpProtocolError } from "../src/errors.mjs";
 import { loadSyntheticPage, buildElements } from "./fixtures/synthetic-slack.mjs";
@@ -126,18 +127,21 @@ export function createFakeCdp({
       name: { type: "computedString", value: e.name },
       properties,
       backendDOMNodeId: e.id,
-      childIds: e.role === "statictext" ? [] : [String(e.id + TEXT_CHILD_OFFSET)],
+      childIds: hasTextChild(e) ? [String(e.id + TEXT_CHILD_OFFSET)] : [],
     };
     if (e.value !== null) Object.assign(node, { value: { type: "string", value: e.value } });
     return node;
   };
+
+  /** @param {Element} e */
+  const hasTextChild = (e) => e.role !== "statictext" && e.text !== null;
 
   /** @param {Element & {id: number}} e */
   const textChild = (e) => ({
     nodeId: String(e.id + TEXT_CHILD_OFFSET),
     ignored: false,
     role: { type: "role", value: "StaticText" },
-    name: { type: "computedString", value: e.role === "textbox" ? (e.value ?? "") : e.name },
+    name: { type: "computedString", value: e.text ?? "" },
     properties: [],
     backendDOMNodeId: e.id + TEXT_CHILD_OFFSET,
     childIds: [],
@@ -147,7 +151,7 @@ export function createFakeCdp({
    * @param {Element & {id: number, index: number}} e
    */
   const activate = (e) => {
-    if (e.role === "link" && e.href !== null) {
+    if ((e.role === "link" || e.role === "treeitem") && e.href !== null) {
       if (!state.navigating) return;
       const target = new URL(e.href, currentUrl());
       if (target.origin === state.origin) {
@@ -205,7 +209,7 @@ export function createFakeCdp({
         ];
         for (const e of elements) {
           nodes.push(axNode(e));
-          if (e.role !== "statictext") nodes.push(textChild(e));
+          if (hasTextChild(e)) nodes.push(textChild(e));
         }
         return { nodes };
       }
@@ -231,8 +235,11 @@ export function createFakeCdp({
         const id = Number(params.backendNodeId);
         const e = elementById(id);
         if (!e) throw new CdpProtocolError(method, { code: -32000, message: "Could not find node with given id" });
-        const children = e.role === "statictext" ? [] : [{ nodeId: 0, backendNodeId: e.id + TEXT_CHILD_OFFSET, nodeName: "#text" }];
-        return { node: { nodeId: 0, backendNodeId: e.id, nodeName: e.role.toUpperCase(), children } };
+        const children = hasTextChild(e) ? [{ nodeId: 0, backendNodeId: e.id + TEXT_CHILD_OFFSET, nodeName: "#text" }] : [];
+        const attributes = Object.entries(e.attributes).flat();
+        const node = { nodeId: 0, backendNodeId: e.id, nodeName: e.role.toUpperCase(), attributes };
+        // depth 0 (the default) describes the node alone; anything else includes the subtree
+        return { node: params.depth === undefined || params.depth === 0 ? node : { ...node, children } };
       }
       case "Input.dispatchMouseEvent": {
         if (params.type === "mouseReleased") {
