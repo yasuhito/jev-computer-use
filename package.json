@@ -1,12 +1,13 @@
 {
   "name": "jev-computer-use",
   "version": "0.1.0",
-  "description": "Jev (TypeSafe System One) UI-candidate selection CLI, a bounded CDP browser message workflow, and a read-only Unity Analytics (Snowflake) daily report for Pi",
+  "description": "Jev (TypeSafe System One) UI-candidate selection CLI, a bounded CDP browser message workflow, a read-only Unity Analytics (Snowflake) daily report for Pi, and its unattended daily wrapper",
   "type": "module",
   "bin": {
     "jev-cu": "bin/jev-cu.mjs",
     "jev-cu-browse": "bin/jev-cu-browse.mjs",
-    "jev-cu-report": "bin/jev-cu-report.mjs"
+    "jev-cu-report": "bin/jev-cu-report.mjs",
+    "jev-cu-daily": "bin/jev-cu-daily.mjs"
   },
   "engines": {
     "node": ">=20"

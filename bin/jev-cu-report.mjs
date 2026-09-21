@@ -18,7 +18,7 @@ import { ValidationError, DEFAULT_MAX_CANDIDATES, HARD_MAX_CANDIDATES } from "..
 import { createTypesafeDecide } from "../src/typesafe-decision.mjs";
 import { RefusalError, TransportError } from "../src/errors.mjs";
 import { CdpAdapter } from "../src/cdp/adapter.mjs";
-import { DEFAULT_CDP_ENDPOINT, listPageTargets, selectPageTarget, connectPageSession } from "../src/cdp/transport.mjs";
+import { DEFAULT_CDP_ENDPOINT, connectDefaultPage } from "../src/cdp/transport.mjs";
 import { PROFILES, DEFAULT_PROFILE_NAME } from "../src/profiles/index.mjs";
 import { DEFAULT_BROWSE_MIN_CONFIDENCE, runWorkflow, validateMessageText, validateDestination } from "../src/workflow.mjs";
 import { SnowflakeError } from "../src/snowflake/executor.mjs";
@@ -213,11 +213,7 @@ function errorPayload(code, message, extra = {}) {
 /** @typedef {(input: {endpoint: string, targetId: string|null, profile: import("../src/profiles/profile.mjs").Profile}) => Promise<import("../src/cdp/adapter.mjs").CdpSession>} ConnectFn */
 
 /** @type {ConnectFn} */
-async function defaultConnect({ endpoint, targetId, profile }) {
-  const targets = await listPageTargets(endpoint);
-  const target = selectPageTarget(targets, { targetId, profile });
-  return connectPageSession(target);
-}
+const defaultConnect = connectDefaultPage;
 
 /**
  * Run the CLI. The SQL executor, decision dependency, CDP connection, and
@@ -238,8 +234,34 @@ export async function runCli({
   sleep = undefined,
   settleMs = undefined,
 } = {}) {
-  /** @param {object} payload */
-  const writeOut = (payload) => stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  const { code, payload } = await runReportJob({ argv, stdout, stderr, env, executor, decide, connect, now, sleep, settleMs });
+  if (payload !== null) stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  return code;
+}
+
+/**
+ * Run one report job programmatically and return the exit code with the
+ * exact payload `runCli` would have printed (`null` for `--help`, which
+ * prints usage on stderr only). Errors that the CLI reports on stderr are
+ * still written there; stdout is never touched, so a caller decides how the
+ * payload is surfaced.
+ *
+ * @param {{argv?: string[], stdout?: WritableLike, stderr?: WritableLike, env?: NodeJS.ProcessEnv, executor?: import("../src/snowflake/executor.mjs").SqlExecutor|null, decide?: import("../src/decide.mjs").DecideFn|null, connect?: ConnectFn, now?: () => number, sleep?: (ms: number) => Promise<void>, settleMs?: number}} [io]
+ * @returns {Promise<{code: number, payload: Record<string, unknown>|null}>}
+ */
+export async function runReportJob({
+  argv = [],
+  stderr = process.stderr,
+  env = process.env,
+  executor = null,
+  decide = null,
+  connect = defaultConnect,
+  now = Date.now,
+  sleep = undefined,
+  settleMs = undefined,
+} = {}) {
+  /** @type {Record<string, unknown>|null} */
+  let payload;
   /** @type {import("../src/cdp/adapter.mjs").CdpSession|null} */
   let session = null;
   try {
@@ -249,12 +271,12 @@ export async function runCli({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       stderr.write(`${USAGE}\n`);
-      writeOut(errorPayload("usage", message));
-      return 2;
+      payload = errorPayload("usage", message);
+      return { code: 2, payload };
     }
     if (options.help) {
       stderr.write(`${USAGE}\n`);
-      return 0;
+      return { code: 0, payload: null };
     }
     const gameName = DEFAULT_GAME_NAME;
     const environmentName = DEFAULT_ENVIRONMENT_NAME;
@@ -281,6 +303,7 @@ export async function runCli({
     const report = buildNewUsersReport({ game, window, rows, generatedAt: new Date(clock).toISOString() });
     const message = validateMessageText(renderSlackMessage(report, { seriesDays: DEFAULT_SERIES_DAYS }));
 
+    /** @type {Record<string, unknown>} */
     const base = {
       tool: TOOL,
       version: VERSION,
@@ -296,8 +319,8 @@ export async function runCli({
       },
     };
     if (options.mode === "dry-run") {
-      writeOut({ ...base, status: "dry-run", send: null });
-      return 0;
+      payload = { ...base, status: "dry-run", send: null };
+      return { code: 0, payload };
     }
     if (destination === null || decideFn === null) throw new Error("send needs a destination and a decision dependency");
 
@@ -321,16 +344,16 @@ export async function runCli({
       exactDestination: true,
       duplicateMarker: report.idempotencyKey,
     });
-    writeOut({ ...base, status: send.status, send });
-    return 0;
+    payload = { ...base, status: send.status, send };
+    return { code: 0, payload };
   } catch (err) {
     if (err instanceof ValidationError) {
-      writeOut(errorPayload(err.code, err.message));
-      return 2;
+      payload = errorPayload(err.code, err.message);
+      return { code: 2, payload };
     }
     if (err instanceof RefusalError) {
-      writeOut({ tool: TOOL, version: VERSION, status: "refused", refusal: { code: err.code, message: err.message, details: err.details } });
-      return 0;
+      payload = { tool: TOOL, version: VERSION, status: "refused", refusal: { code: err.code, message: err.message, details: err.details } };
+      return { code: 0, payload };
     }
     const message = err instanceof Error ? err.message : String(err);
     let code = "api";
@@ -351,8 +374,8 @@ export async function runCli({
       code = "missing_key";
     }
     if (code !== "missing_key" && code !== "missing_snowflake_config") stderr.write(`${TOOL}: ${message}\n`);
-    writeOut(errorPayload(code, message, extra));
-    return 1;
+    payload = errorPayload(code, message, extra);
+    return { code: 1, payload };
   } finally {
     if (session) {
       try {
