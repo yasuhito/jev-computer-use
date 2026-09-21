@@ -529,12 +529,15 @@ export class CdpAdapter {
 
   /**
    * Count accessibility nodes whose whitespace-collapsed name equals the
-   * text. Read-only; used to verify that a message appeared on the page.
+   * text (default) or contains it (`match: "contains"`). Read-only; used to
+   * verify that a message appeared on the page and to detect that content
+   * carrying a caller's marker is already present.
    *
    * @param {string} text
+   * @param {{match?: "exact"|"contains"}} [options]
    * @returns {Promise<{count: number, backendNodeIds: number[]}>}
    */
-  async findText(text) {
+  async findText(text, { match = "exact" } = {}) {
     await this.#ensureEnabled();
     const wanted = sanitizeLabel(text, MAX_VALUE_LENGTH);
     if (wanted.length === 0) return { count: 0, backendNodeIds: [] };
@@ -545,7 +548,8 @@ export class CdpAdapter {
       const node = reduceAxNode(raw);
       if (!node) continue;
       const name = typeof raw?.name?.value === "string" ? sanitizeLabel(raw.name.value, MAX_VALUE_LENGTH) : "";
-      if (name === wanted) backendNodeIds.push(node.backendNodeId);
+      const hit = match === "contains" ? name.includes(wanted) : name === wanted;
+      if (hit) backendNodeIds.push(node.backendNodeId);
     }
     return { count: backendNodeIds.length, backendNodeIds };
   }

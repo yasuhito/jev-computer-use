@@ -76,6 +76,26 @@ export function validateDestination(destination) {
 }
 
 /**
+ * Whether an observed accessible name names exactly the requested
+ * destination: the name is the requested string itself, or starts with it
+ * and continues only with decoration that cannot belong to a name
+ * (whitespace, a comma, or an opening bracket). "qa2-metrics (channel)" and
+ * "qa2-metrics, 3 unread" match "qa2-metrics"; "qa2-metrics-old" and
+ * "qa2-metrics2" do not. Comparison is case-sensitive after the same
+ * whitespace normalization both sides already had.
+ *
+ * @param {string} name observed accessible name
+ * @param {string} requested normalized requested destination
+ * @returns {boolean}
+ */
+export function destinationNameMatches(name, requested) {
+  if (requested.length === 0) return false;
+  if (name === requested) return true;
+  if (!name.startsWith(requested)) return false;
+  return /^[\s,([{]/.test(name.slice(requested.length));
+}
+
+/**
  * @param {Candidate} c
  */
 function publicCandidate(c) {
@@ -202,7 +222,15 @@ function composerHolds(snapshot, composerBackendNodeId, text) {
  * Run the workflow. RefusalErrors become a `refused` report; transport and
  * API failures propagate to the caller.
  *
- * @param {{mode: Mode, destination: string|null, text?: string|null, adapter: CdpAdapter, decide: DecideFn|null, threshold?: number, maxCandidates: number}} input
+ * Two optional caller guards tighten the workflow deterministically:
+ * `exactDestination` requires the requested name to be exactly the leading
+ * name of the chosen destination's accessible name (see
+ * destinationNameMatches), so an allowlisted name is never satisfied by a
+ * merely similar label; `duplicateMarker` refuses to draft or send when the
+ * destination's currently rendered accessibility tree contains the marker.
+ * This is a best-effort preflight guard, not durable or atomic idempotency.
+ *
+ * @param {{mode: Mode, destination: string|null, text?: string|null, adapter: CdpAdapter, decide: DecideFn|null, threshold?: number, maxCandidates: number, exactDestination?: boolean, duplicateMarker?: string|null}} input
  * @returns {Promise<WorkflowReport>}
  */
 export async function runWorkflow({
@@ -213,6 +241,8 @@ export async function runWorkflow({
   decide,
   threshold = DEFAULT_BROWSE_MIN_CONFIDENCE,
   maxCandidates,
+  exactDestination = false,
+  duplicateMarker = null,
 }) {
   const profile = adapter.profile;
   /** @type {WorkflowReport} */
@@ -291,6 +321,13 @@ export async function runWorkflow({
     if (chosenDestination.url === null) {
       throw new RefusalError("unsupported_action", "the selected destination has no URL to verify against");
     }
+    if (exactDestination && !destinationNameMatches(chosenDestination.name, destination)) {
+      throw new RefusalError(
+        "destination_mismatch",
+        `the selected destination is named "${chosenDestination.name}", which does not name exactly "${destination}"`,
+        { candidateId: chosenDestination.id, requested: destination },
+      );
+    }
     report.destination.candidate = publicCandidate(chosenDestination);
     const destinationUrl = chosenDestination.url;
 
@@ -333,6 +370,7 @@ export async function runWorkflow({
         executable: profile.trusted,
         blocker: profile.trusted ? null : "untrusted_profile",
         actions: ["navigate", ...(text !== null ? ["draft"] : [])],
+        guards: { exactDestination, duplicateMarker },
         preview,
       });
       return report;
@@ -360,6 +398,16 @@ export async function runWorkflow({
     const atDest = await adapter.observe();
     const arrived = atDestination(atDest, destinationUrl);
     if (!arrived.ok) throw new RefusalError(arrived.code, arrived.reason);
+    if (duplicateMarker !== null) {
+      const existing = await adapter.findText(duplicateMarker, { match: "contains" });
+      report.steps.push({ step: "duplicate", phase: "verify", marker: duplicateMarker, found: existing.count });
+      if (existing.count > 0) {
+        throw new RefusalError("duplicate_post", `the destination already shows ${existing.count} item(s) carrying the marker`, {
+          marker: duplicateMarker,
+          count: existing.count,
+        });
+      }
+    }
     const composers = atDest.candidates.filter((c) => c.kind === "composer");
     const composer = await decideStep(
       "composer",

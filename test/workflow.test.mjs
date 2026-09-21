@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CdpAdapter, ALLOWED_CDP_METHODS } from "../src/cdp/adapter.mjs";
 import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
-import { runWorkflow, validateMessageText, validateDestination, DEFAULT_BROWSE_MIN_CONFIDENCE } from "../src/workflow.mjs";
+import { runWorkflow, validateMessageText, validateDestination, destinationNameMatches, DEFAULT_BROWSE_MIN_CONFIDENCE } from "../src/workflow.mjs";
 import { ValidationError } from "../src/validate.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
 import { decideByLabel, decideFixed, fakeClock } from "./helpers.mjs";
@@ -313,4 +313,51 @@ test("message text and destination are validated deterministically", () => {
   assert.equal(validateDestination("  qa2   metrics "), "qa2 metrics");
   assert.throws(() => validateDestination(""), ValidationError);
   assert.throws(() => validateDestination("x".repeat(201)), ValidationError);
+});
+
+/* ----------------------------- caller guards ----------------------------- */
+
+test("destinationNameMatches accepts only the requested name followed by decoration", () => {
+  assert.equal(destinationNameMatches("qa2-metrics", "qa2-metrics"), true);
+  assert.equal(destinationNameMatches("qa2-metrics (channel)", "qa2-metrics"), true);
+  assert.equal(destinationNameMatches("qa2-metrics, 3 unread messages", "qa2-metrics"), true);
+  assert.equal(destinationNameMatches("qa2-metrics [muted]", "qa2-metrics"), true);
+  assert.equal(destinationNameMatches("qa2-metrics-old", "qa2-metrics"), false);
+  assert.equal(destinationNameMatches("qa2-metrics2", "qa2-metrics"), false);
+  assert.equal(destinationNameMatches("QA2-metrics", "qa2-metrics"), false);
+  assert.equal(destinationNameMatches("qa2-metrics", "qa2-metric"), false);
+  assert.equal(destinationNameMatches("qa2-metrics", ""), false);
+});
+
+test("exactDestination refuses before any click when the chosen link does not name the request", async () => {
+  const env = setup();
+  const report = await run(env, { mode: "navigate", destination: "qa2-metric", exactDestination: true });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "destination_mismatch");
+  assert.equal(report.completed, null);
+  assertNoInput(env.fake);
+  const ok = await run(setup(), { mode: "navigate", destination: "qa2-metrics", exactDestination: true });
+  assert.equal(ok.status, "executed");
+});
+
+test("duplicateMarker refuses when the rendered destination contains the marker, and is reported in the plan", async () => {
+  const env = setup();
+  env.fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", ["earlier post key: job-2026-09-20"]);
+  const report = await run(env, { mode: "send", text: TEXT, duplicateMarker: "job-2026-09-20" });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "duplicate_post");
+  assert.equal(report.completed, "navigate");
+  assert.equal(env.fake.methodCalls("Input.insertText").length, 0);
+  assert.deepEqual(env.fake.currentMessages(), ["earlier post key: job-2026-09-20"]);
+  const step = /** @type {{step: string, found: number}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "duplicate"));
+  assert.equal(step?.found, 1);
+
+  const fresh = setup();
+  const posted = await run(fresh, { mode: "send", text: TEXT, duplicateMarker: "job-2026-09-21" });
+  assert.equal(posted.status, "executed");
+  assert.deepEqual(fresh.fake.currentMessages(), [TEXT]);
+
+  const plan = await run(setup(), { mode: "dry-run", text: TEXT, decide: decideByLabel([/^qa2-metrics/, /^Message #general/, /^Send now/]), exactDestination: true, duplicateMarker: "m" });
+  const planStep = /** @type {{guards: object}|undefined} */ (plan.steps.find((s) => /** @type {{step: string}} */ (s).step === "plan"));
+  assert.deepEqual(planStep?.guards, { exactDestination: true, duplicateMarker: "m" });
 });
