@@ -5,12 +5,17 @@ import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
 import { runWorkflow, validateMessageText, validateDestination, destinationNameMatches, DEFAULT_BROWSE_MIN_CONFIDENCE } from "../src/workflow.mjs";
 import { ValidationError } from "../src/validate.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
+import { loadSyntheticPage } from "./fixtures/synthetic-slack.mjs";
 import { decideByLabel, decideFixed, fakeClock } from "./helpers.mjs";
 
 const ALLOWED = new Set(ALLOWED_CDP_METHODS);
 const QA2 = "https://app.slack.com/client/T0SYNTH/C0QA2METRICS";
 const TEXT = "QA2 daily users: 1234 (+5% vs yesterday)";
 const FULL_FLOW = [/^qa2-metrics/, /^Message #qa2-metrics/, /^Send now/];
+/** The same three choices on the real-shaped (Japanese, tree-sidebar) page. */
+const TREE_FLOW = [/^qa2-metrics \[channel\]$/, /^qa2-metrics へのメッセージ$/, /^メッセージを送信$/];
+/** @returns {Parameters<typeof createFakeCdp>[0]} */
+const treeShape = () => ({ page: loadSyntheticPage({ shape: "tree" }) });
 const UNTRUSTED_PROFILE = { ...SLACK_PROFILE, name: "untrusted-test", trusted: false };
 
 /**
@@ -153,9 +158,11 @@ test("a label shared by two distinct destinations is refused as ambiguous identi
     key: "twin",
     role: "link",
     name: "qa2-metrics (channel)",
+    text: "qa2-metrics (channel)",
     href: "/client/T0SYNTH/C0IMPOSTOR",
     value: null,
     disabled: false,
+    attributes: {},
   });
   const report = await run(env, { mode: "navigate" });
   assert.equal(report.status, "refused");
@@ -322,6 +329,10 @@ test("destinationNameMatches accepts only the requested name followed by decorat
   assert.equal(destinationNameMatches("qa2-metrics (channel)", "qa2-metrics"), true);
   assert.equal(destinationNameMatches("qa2-metrics, 3 unread messages", "qa2-metrics"), true);
   assert.equal(destinationNameMatches("qa2-metrics [muted]", "qa2-metrics"), true);
+  assert.equal(destinationNameMatches("qa2（チャンネル）", "qa2"), true);
+  assert.equal(destinationNameMatches("qa2［ミュート］", "qa2"), true);
+  assert.equal(destinationNameMatches("qa2 3", "qa2"), true);
+  assert.equal(destinationNameMatches("qa2ー旧", "qa2"), false);
   assert.equal(destinationNameMatches("qa2-metrics-old", "qa2-metrics"), false);
   assert.equal(destinationNameMatches("qa2-metrics2", "qa2-metrics"), false);
   assert.equal(destinationNameMatches("QA2-metrics", "qa2-metrics"), false);
@@ -360,4 +371,67 @@ test("duplicateMarker refuses when the rendered destination contains the marker,
   const plan = await run(setup(), { mode: "dry-run", text: TEXT, decide: decideByLabel([/^qa2-metrics/, /^Message #general/, /^Send now/]), exactDestination: true, duplicateMarker: "m" });
   const planStep = /** @type {{guards: object}|undefined} */ (plan.steps.find((s) => /** @type {{step: string}} */ (s).step === "plan"));
   assert.deepEqual(planStep?.guards, { exactDestination: true, duplicateMarker: "m" });
+});
+
+/* ----------------------------- real-shaped page ----------------------------- */
+
+test("observe mode on the real-shaped page exposes the channel rows as destinations without any link", async () => {
+  const env = setup(treeShape());
+  const report = await run(env, { mode: "observe", destination: null, decide: decideByLabel([]) });
+  assert.equal(report.status, "observed");
+  assert.deepEqual(
+    report.candidates?.map((c) => [c.kind, c.role, c.label, c.url]),
+    [
+      ["destination", "treeitem", "general [channel]", "https://app.slack.com/client/T0SYNTH/C0GENERAL"],
+      ["destination", "treeitem", "qa2-metrics [channel]", QA2],
+      ["destination", "treeitem", "random [channel]", "https://app.slack.com/client/T0SYNTH/C0RANDOM"],
+      ["composer", "textbox", "general へのメッセージ", null],
+      ["send", "button", "メッセージを送信", null],
+    ],
+  );
+  assertNoInput(env.fake);
+});
+
+test("exactDestination on the real-shaped page matches the row's visible name, not its empty accessible name", async () => {
+  const ok = await run(setup(treeShape()), { mode: "navigate", destination: "qa2-metrics", exactDestination: true, decide: decideByLabel(TREE_FLOW) });
+  assert.equal(ok.status, "executed");
+  assert.equal(ok.completed, "navigate");
+  assert.equal(ok.destination.candidate?.role, "treeitem");
+  assert.equal(ok.destination.candidate?.url, QA2);
+  const env = setup(treeShape());
+  const report = await run(env, { mode: "navigate", destination: "qa2-metric", exactDestination: true, decide: decideByLabel(TREE_FLOW) });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "destination_mismatch");
+  assertNoInput(env.fake);
+});
+
+test("send mode on the real-shaped page drafts through the localized composer and clicks the localized send button once", async () => {
+  const env = setup(treeShape());
+  const report = await run(env, { mode: "send", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
+  assert.deepEqual(env.fake.currentMessages(), [TEXT]);
+  assert.equal(env.fake.currentUrl(), QA2);
+  assert.equal(env.fake.clicks().length, 3);
+  assert.deepEqual(env.fake.state.sideEffects, []);
+  assert.ok(env.fake.calls.every((c) => ALLOWED.has(c.method)));
+  // The second run sees the marker and refuses before typing.
+  const again = await run(env, { mode: "send", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
+  assert.equal(again.status, "refused");
+  assert.equal(again.refusal?.code, "duplicate_post");
+});
+
+test("on the real-shaped page a renamed row or a row whose key changed refuses before the click", async () => {
+  const env = setup(treeShape());
+  const first = await env.adapter.observe();
+  const qa2 = first.candidates.find((c) => c.label === "qa2-metrics [channel]");
+  assert.ok(qa2);
+  const conv = env.fake.page.conversations.find((c) => c.id === "C0QA2METRICS");
+  assert.ok(conv);
+  conv.name = "qa2-metrics-renamed";
+  await assert.rejects(env.adapter.click(first, qa2.id), (/** @type {{code: string}} */ err) => err.code === "changed_state");
+  conv.name = "qa2-metrics";
+  conv.id = "C0MOVED";
+  await assert.rejects(env.adapter.click(first, qa2.id), (/** @type {{code: string}} */ err) => err.code === "changed_state");
+  assertNoInput(env.fake);
 });

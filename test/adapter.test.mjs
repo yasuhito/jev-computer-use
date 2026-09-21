@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CdpAdapter, ALLOWED_CDP_METHODS, urlReached, digestCandidates } from "../src/cdp/adapter.mjs";
+import { CdpAdapter, ALLOWED_CDP_METHODS, MAX_ATTRIBUTE_LOOKUPS, urlReached, digestCandidates } from "../src/cdp/adapter.mjs";
 import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
 import { RefusalError, TransportError, CdpProtocolError } from "../src/errors.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
+import { loadSyntheticPage } from "./fixtures/synthetic-slack.mjs";
 import { fakeClock } from "./helpers.mjs";
 
 const ALLOWED = new Set(ALLOWED_CDP_METHODS);
@@ -87,6 +88,56 @@ test("observe bounds the recognized candidates", async () => {
   await rejectsRefusal(adapter.observe(), "too_many_candidates");
 });
 
+test("observe fetches element attributes only for the profile's attribute roles and bounds the lookups", async () => {
+  {
+    // No attribute roles: no describeNode at all during observation.
+    const fake = createFakeCdp();
+    const adapter = new CdpAdapter({ session: fake.session, profile: { ...SLACK_PROFILE, attributeRoles: undefined } });
+    await adapter.observe();
+    assert.equal(fake.methodCalls("DOM.describeNode").length, 0);
+  }
+  {
+    const { fake, adapter } = setup();
+    const snapshot = await adapter.observe();
+    const lookups = fake.methodCalls("DOM.describeNode");
+    assert.ok(lookups.length > 0);
+    assert.ok(lookups.every((c) => c.params.depth === 0));
+    for (const c of snapshot.candidates) {
+      if (c.role === "link") assert.ok(!lookups.some((l) => l.params.backendNodeId === c.backendNodeId), "links are not looked up");
+      else assert.ok(lookups.some((l) => l.params.backendNodeId === c.backendNodeId), `${c.role} is looked up`);
+    }
+    // The links shape carries no hooks; the decoy that does is still never a candidate.
+    assert.ok(snapshot.candidates.every((c) => c.attributes["data-qa"] === undefined));
+  }
+  {
+    const { fake, adapter } = setup();
+    for (let i = 0; i < MAX_ATTRIBUTE_LOOKUPS; i += 1) {
+      fake.state.extraElements.push({ key: `b${i}`, role: "button", name: `b${i}`, text: `b${i}`, href: null, value: null, disabled: false, attributes: {} });
+    }
+    await rejectsRefusal(adapter.observe(), "too_many_candidates");
+  }
+});
+
+test("observe exposes the contents text of nodes whose accessible name is empty", async () => {
+  /** @type {import("../src/profiles/profile.mjs").Profile} */
+  const rows = {
+    name: "rows",
+    description: "test profile",
+    trusted: false,
+    attributeRoles: new Set(["treeitem"]),
+    checkTarget: () => ({ ok: true }),
+    recognize: (n) => (n.role === "treeitem" ? { kind: "control", label: `${n.name}|${n.contentText}|${n.attributes["data-item-key"] ?? "-"}` } : null),
+    allowAction: () => ({ ok: false }),
+  };
+  const fake = createFakeCdp({ page: loadSyntheticPage({ shape: "tree" }) });
+  const adapter = new CdpAdapter({ session: fake.session, profile: rows });
+  const snapshot = await adapter.observe();
+  assert.deepEqual(
+    snapshot.candidates.map((c) => c.label),
+    ["チャンネル||section-channels", "|general|C0GENERAL", "|qa2-metrics|C0QA2METRICS", "|random|C0RANDOM", "ダイレクトメッセージ||section-dms", "|Alice Example|D0ALICE"],
+  );
+});
+
 test("observe surfaces transport failures as TransportError with a phase", async () => {
   const { fake, adapter } = setup();
   fake.state.failures.set("Accessibility.getFullAXTree", new Error("socket hiccup"));
@@ -125,7 +176,7 @@ test("click accepts a hit test that resolves to a descendant of the target", asy
   const dest = find(snapshot, /^random/);
   const report = await adapter.click(snapshot, dest.id, { expectUrl: dest.url });
   assert.equal(report.verified, true);
-  assert.equal(fake.methodCalls("DOM.describeNode").length, 1);
+  assert.equal(fake.methodCalls("DOM.describeNode").filter((c) => c.params.depth === -1).length, 1);
 });
 
 test("click reports unverified when the page never reaches the expected URL", async () => {
@@ -162,7 +213,7 @@ test("click gate: changed candidates, changed URL, and a renamed element all ref
     const { fake, adapter } = setup();
     const snapshot = await adapter.observe();
     const dest = find(snapshot, /^general/);
-    fake.state.extraElements.push({ key: "late", role: "link", name: "late-channel (channel)", href: "/client/T0SYNTH/C0LATE", value: null, disabled: false });
+    fake.state.extraElements.push({ key: "late", role: "link", name: "late-channel (channel)", text: "late-channel (channel)", href: "/client/T0SYNTH/C0LATE", value: null, disabled: false, attributes: {} });
     await rejectsRefusal(adapter.click(snapshot, dest.id), "changed_state");
     assert.equal(fake.clicks().length, 0);
   }

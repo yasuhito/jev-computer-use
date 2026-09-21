@@ -1,6 +1,7 @@
 {
   "title": "Synthetic Slack (local test page, not Slack)",
   "team": "T0SYNTH",
+  "shape": "links",
   "conversations": [
     { "id": "C0GENERAL", "name": "general", "kind": "channel" },
     { "id": "C0QA2METRICS", "name": "qa2-metrics", "kind": "channel" },
@@ -18,6 +19,7 @@
     { "key": "compose", "role": "button", "name": "New message" },
     { "key": "react", "role": "button", "name": "Add reaction" },
     { "key": "upload", "role": "button", "name": "Upload file" },
-    { "key": "schedule", "role": "button", "name": "Schedule for later" }
+    { "key": "schedule", "role": "button", "name": "Schedule for later" },
+    { "key": "send-options", "role": "button", "name": "Send options", "attributes": { "data-qa": "texty_send_options_button" } }
   ]
 }

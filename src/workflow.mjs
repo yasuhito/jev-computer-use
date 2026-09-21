@@ -76,15 +76,16 @@ export function validateDestination(destination) {
 }
 
 /**
- * Whether an observed accessible name names exactly the requested
+ * Whether an observed destination name names exactly the requested
  * destination: the name is the requested string itself, or starts with it
  * and continues only with decoration that cannot belong to a name
- * (whitespace, a comma, or an opening bracket). "qa2-metrics (channel)" and
- * "qa2-metrics, 3 unread" match "qa2-metrics"; "qa2-metrics-old" and
- * "qa2-metrics2" do not. Comparison is case-sensitive after the same
- * whitespace normalization both sides already had.
+ * (whitespace, a comma, or an opening bracket, ASCII or full-width).
+ * "qa2-metrics (channel)", "qa2-metrics, 3 unread", and "qa2（チャンネル）"
+ * match "qa2-metrics" and "qa2"; "qa2-metrics-old" and "qa2-metrics2" do
+ * not. Comparison is case-sensitive after the same whitespace normalization
+ * both sides already had.
  *
- * @param {string} name observed accessible name
+ * @param {string} name observed destination name
  * @param {string} requested normalized requested destination
  * @returns {boolean}
  */
@@ -92,7 +93,7 @@ export function destinationNameMatches(name, requested) {
   if (requested.length === 0) return false;
   if (name === requested) return true;
   if (!name.startsWith(requested)) return false;
-  return /^[\s,([{]/.test(name.slice(requested.length));
+  return /^[\s,([{（［｛]/.test(name.slice(requested.length));
 }
 
 /**

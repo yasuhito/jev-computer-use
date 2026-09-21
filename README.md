@@ -181,12 +181,16 @@ profile already recognized, followed by deterministic validation in code.
 
 - **Two layers, one allowlist.** `src/cdp/adapter.mjs` (`CdpAdapter`) knows
   only generic browser concepts: a page target, its accessibility tree reduced
-  to role, name, URL, value, and disabled facts, box models, hit testing, one
-  left click, and inserting exact text into the focused editable. Which links
-  are destinations, which textbox is a composer, which button sends, and which
-  action each kind permits come from a profile (`src/profiles/`). The adapter
-  enforces the profile and can never widen it; `test/profiles.test.mjs` proves
-  the adapter, transport, and workflow never mention Slack.
+  to role, name, contents text (the static text below a node whose accessible
+  name the browser left empty), URL, value, and disabled facts, the element
+  attributes of nodes whose roles a profile lists in `attributeRoles` (one
+  `DOM.describeNode` each, at most 256 per observation), box models, hit
+  testing, one left click, and inserting exact text into the focused editable.
+  Which links or rows are destinations, which textbox is a composer, which
+  button sends, and which action each kind permits come from a profile
+  (`src/profiles/`). The adapter enforces the profile and can never widen it;
+  `test/profiles.test.mjs` proves the adapter, transport, and workflow never
+  mention Slack or carry its selectors.
 - **Closed CDP method set.** The adapter can send only the methods listed in
   `ALLOWED_CDP_METHODS`. `Runtime.evaluate` (arbitrary JavaScript), key events,
   `Page.navigate`, network, storage, emulation, and DOM mutation methods are
@@ -196,13 +200,18 @@ profile already recognized, followed by deterministic validation in code.
   profile.
 - **Slack allowlist.** The Slack profile recognizes exactly three kinds:
   destinations (same-origin `https://app.slack.com/client/<team>/<C id>`
-  channel links with no query or fragment), the composer (a `textbox` named
-  `Message ...`), and the send
-  control (a `button` named `Send` or `Send now`, only while enabled). It
-  never recognizes, so the model is never offered and no action can reach:
-  reactions, uploads, downloads, deletion, external links, sign-in or
-  sign-out, workspace or account settings, search, threads, scheduling, or any
-  other control.
+  channel links with no query or fragment, or sidebar `treeitem` rows whose
+  `data-item-key` is a channel id on the page's team: the current Slack client
+  renders the sidebar as such rows with no link, wrapped in a `draggable`
+  element that makes Chromium leave the row's accessible name empty, so the
+  row's name comes from its visible contents and its URL from the key), the
+  composer (a `textbox` named `Message ...` or carrying Slack's
+  locale-independent `data-qa="texty_input"`), and the send control (a
+  `button` named `Send` or `Send now` or carrying `data-qa="texty_send_button"`,
+  only while enabled). It never recognizes, so the model is never offered and
+  no action can reach: direct messages, groups, sidebar sections, reactions,
+  uploads, downloads, deletion, external links, sign-in or sign-out, workspace
+  or account settings, search, threads, scheduling, or any other control.
 - **Decisions are bound to identity and freshness.** A snapshot records the
   target id, URL, and a digest of every recognized candidate. Immediately
   before any action the adapter re-observes and refuses unless the target id,
@@ -219,9 +228,10 @@ profile already recognized, followed by deterministic validation in code.
   `unverified`.
 - **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
-  unless the requested name is exactly the leading name of the chosen link's
-  accessible name (decoration such as `(channel)` or `, 3 unread` may follow;
-  `qa2-metrics-old` never matches `qa2-metrics`), and `duplicateMarker`
+  unless the requested name is exactly the leading name of the chosen
+  destination's name (decoration such as `(channel)`, `（チャンネル）`, or
+  `, 3 unread` may follow; `qa2-metrics-old` never matches `qa2-metrics`),
+  and `duplicateMarker`
   refuses (`duplicate_post`) to draft or send when the destination's currently
   rendered accessibility tree contains the marker. This duplicate check is
   best-effort defense in depth: virtualized history may omit an earlier post,
@@ -300,7 +310,7 @@ point, URLs, and read-back), the post verification, and in dry-run a `plan`.
 | --- | --- |
 | `target_not_allowed` | the page origin is outside the profile's allowed targets |
 | `no_target` / `ambiguous_target` | zero or several page targets match; pass `--target` |
-| `no_candidates` / `too_many_candidates` | nothing recognized, or more than `--max-candidates` |
+| `no_candidates` / `too_many_candidates` | nothing recognized, or more than `--max-candidates`, or more than 256 nodes of the profile's attribute roles to look up |
 | `untrusted_profile` | execution requested under a profile that only observes |
 | `unsupported_action` | the profile does not permit that action on that candidate |
 | `ambiguous_identity` | two distinct candidates share the chosen label, or the hit test resolved elsewhere |
@@ -326,7 +336,7 @@ on any refusal. No network, no Slack.
 To exercise the live transport against a real Chrome with no credential:
 
 ```sh
-npm run serve:synthetic-slack -- --port 8765
+npm run serve:synthetic-slack -- --port 8765 [--shape links|tree]
 chromium --headless=new --remote-debugging-port=9222 --user-data-dir=/tmp/jev-cu-chrome \
   http://127.0.0.1:8765/client/T0SYNTH/C0GENERAL
 node bin/jev-cu-browse.mjs --profile slack-local-synthetic --mode observe
@@ -334,7 +344,15 @@ node bin/jev-cu-browse.mjs --profile slack-local-synthetic --mode observe
 
 The synthetic page is rendered from the same JSON model the fake CDP uses; it
 imitates only the shapes the Slack profile cares about plus decoys the profile
-must never offer, and it stores nothing.
+must never offer, and it stores nothing. It has two shapes, and the tests
+cover both: `links` (the default; an English page with `<a href>` sidebar
+links, a `Message #x` composer, and a `Send now` button) and `tree` (the shape
+the real Slack client rendered in 2026 for a Japanese-locale account:
+`lang="ja-JP"`, `treeitem` sidebar rows with `data-item-key` and no link whose
+accessible name a real Chromium computes as empty, section and direct-message
+rows the profile must skip, and a composer and send button that only Slack's
+`data-qa` hooks identify). Observing the `tree` shape through a real Chromium
+must yield exactly the three channel rows, the composer, and the send button.
 
 ## jev-cu-report: QA2 daily New Users report
 
