@@ -28,7 +28,6 @@ import {
   DEFAULT_ENVIRONMENT_NAME,
   resolveGameEnvironment,
   fetchNewUsersByStartDate,
-  validateName,
 } from "../src/unity/data-access.mjs";
 import { completeUtcWindow, DEFAULT_WINDOW_DAYS, MIN_WINDOW_DAYS, MAX_WINDOW_DAYS } from "../src/report/dates.mjs";
 import { buildNewUsersReport } from "../src/report/new-users.mjs";
@@ -44,7 +43,6 @@ export const SOURCES = Object.freeze(["snowflake", "fixture"]);
 const VALUE_FLAGS = new Set([
   "--source",
   "--fixture",
-  "--environment",
   "--days",
   "--series-days",
   "--now",
@@ -69,7 +67,6 @@ bounded workflow, only to a destination named in --allow-destination.
 Data options:
   --source KIND         ${SOURCES.join(" | ")} (default snowflake; snowflake reads SNOWFLAKE_* from the environment)
   --fixture FILE        recorded result sets for --source fixture
-  --environment NAME    ENVIRONMENT_NAME to select (default ${DEFAULT_ENVIRONMENT_NAME})
   --days N              complete UTC days in the window, ${MIN_WINDOW_DAYS}..${MAX_WINDOW_DAYS} (default ${DEFAULT_WINDOW_DAYS})
   --series-days N       days shown in the message series, 1..days (default ${DEFAULT_SERIES_DAYS})
   --now ISO             freeze the clock (the current UTC day is always excluded)
@@ -97,7 +94,6 @@ Exit codes: 0 outcome, 1 runtime error, 2 usage error.`;
  * @typedef {object} Options
  * @property {"snowflake"|"fixture"} source
  * @property {string|null} fixture
- * @property {string} environment
  * @property {number} days
  * @property {number} seriesDays
  * @property {number|null} now
@@ -123,7 +119,6 @@ export function parseArgs(argv) {
   const options = {
     source: "snowflake",
     fixture: null,
-    environment: DEFAULT_ENVIRONMENT_NAME,
     days: DEFAULT_WINDOW_DAYS,
     seriesDays: DEFAULT_SERIES_DAYS,
     now: null,
@@ -162,7 +157,7 @@ export function parseArgs(argv) {
     if (!VALUE_FLAGS.has(flag)) throw new Error(`unknown option "${arg}"`);
     if (inline === undefined) {
       const next = argv[i + 1];
-      const nameFlag = flag === "--destination" || flag === "--allow-destination" || flag === "--environment";
+      const nameFlag = flag === "--destination" || flag === "--allow-destination";
       if (next === undefined || (next.startsWith("--") && !nameFlag)) throw new Error(`${flag} requires a value`);
       inline = next;
       i += 1;
@@ -174,9 +169,6 @@ export function parseArgs(argv) {
         break;
       case "--fixture":
         options.fixture = inline;
-        break;
-      case "--environment":
-        options.environment = inline;
         break;
       case "--days":
         options.days = integer(flag, inline, MIN_WINDOW_DAYS, MAX_WINDOW_DAYS);
@@ -312,7 +304,7 @@ export async function runCli({
       return 0;
     }
     const gameName = DEFAULT_GAME_NAME;
-    const environmentName = validateName(options.environment, "--environment");
+    const environmentName = DEFAULT_ENVIRONMENT_NAME;
     const destination = options.destination === null ? null : assertAllowlisted(options.destination, options.allowDestinations);
 
     // Everything the browser stage needs is resolved before any query runs,

@@ -45,7 +45,6 @@ test("parseArgs defaults to a snowflake dry-run and validates every flag", () =>
   const o = parseArgs([]);
   assert.equal(o.source, "snowflake");
   assert.equal(o.mode, "dry-run");
-  assert.equal(o.environment, "production");
   assert.equal(o.days, 14);
   assert.equal(o.seriesDays, 7);
   assert.equal(o.now, null);
@@ -62,6 +61,7 @@ test("parseArgs defaults to a snowflake dry-run and validates every flag", () =>
   assert.throws(() => parseArgs(["--mode", "observe"]), /--mode must be one of/);
   assert.throws(() => parseArgs(["--mode", "draft"]), /--mode must be one of/);
   assert.throws(() => parseArgs(["--game", "other"]), /unknown option/);
+  assert.throws(() => parseArgs(["--environment", "development"]), /unknown option/);
   assert.throws(() => parseArgs(["--post"]), /unknown option/);
 });
 
@@ -144,10 +144,6 @@ test("data conditions map to exit 1 with the data-access code", async () => {
   const c = captureIo(FIXTURE_ARGS, { executor: empty });
   assert.equal(await runCli(c.io), 1);
   assert.equal(c.json().error.code, "game_not_found");
-  const other = captureIo([...FIXTURE_ARGS, "--environment", "staging"]);
-  assert.equal(await runCli(other.io), 1);
-  assert.equal(other.json().error.code, "environment_not_found");
-  assert.deepEqual(other.json().details.environmentsSeen, ["development", "production"]);
 });
 
 test("send mode posts the exact rendered message through the bounded workflow and verifies it", async () => {

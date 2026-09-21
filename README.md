@@ -379,8 +379,8 @@ ORDER BY START_DATE
 
 Game resolution is code: rows whose `GAME_NAME` equals `QA2` exactly must
 share one `GAME_ID`, and exactly one of them must have
-`ENVIRONMENT_NAME` equal to `--environment` (default `production`, compared
-case-insensitively). Zero or several rows at any step is an error
+`ENVIRONMENT_NAME` equal to `production` (compared case-insensitively). Zero
+or several rows at any step is an error
 (`game_not_found`, `ambiguous_game`, `environment_not_found`,
 `ambiguous_environment`); the run never guesses.
 
@@ -491,7 +491,6 @@ Options:
 | --- | --- | --- |
 | `--source KIND` | `snowflake` or `fixture` | `snowflake` |
 | `--fixture FILE` | recorded result sets (with `--source fixture`) | |
-| `--environment NAME` | `ENVIRONMENT_NAME` to select | `production` |
 | `--days N` | complete UTC days in the window, 8..90 | `14` |
 | `--series-days N` | days shown in the message series, 1..days | `7` |
 | `--now ISO` | freeze the clock (ISO-8601 instant with zone) | real time |
