@@ -4,12 +4,22 @@
     "checkJs": true,
     "noEmit": true,
     "target": "es2022",
-    "lib": ["es2022"],
+    "lib": [
+      "es2022"
+    ],
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "strict": true,
     "noUncheckedIndexedAccess": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["bin/**/*.mjs", "eslint.config.js", "src/**/*.mjs", "test/**/*.mjs"]
+  "include": [
+    "bin/**/*.mjs",
+    "eslint.config.js",
+    "scripts/**/*.mjs",
+    "src/**/*.mjs",
+    "test/**/*.mjs"
+  ]
 }

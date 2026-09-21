@@ -1,0 +1,23 @@
+{
+  "title": "Synthetic Slack (local test page, not Slack)",
+  "team": "T0SYNTH",
+  "conversations": [
+    { "id": "C0GENERAL", "name": "general", "kind": "channel" },
+    { "id": "C0QA2METRICS", "name": "qa2-metrics", "kind": "channel" },
+    { "id": "C0RANDOM", "name": "random", "kind": "channel" },
+    { "id": "D0ALICE", "name": "Alice Example", "kind": "dm" }
+  ],
+  "decoys": [
+    { "key": "help", "role": "link", "name": "Help center", "href": "https://example.com/help" },
+    { "key": "prefs", "role": "link", "name": "Preferences", "href": "/client/T0SYNTH/C0GENERAL?settings=1" },
+    { "key": "settings", "role": "link", "name": "Workspace settings", "href": "/admin/settings" },
+    { "key": "delete", "role": "link", "name": "Delete channel", "href": "/admin/delete/C0GENERAL" },
+    { "key": "signout", "role": "link", "name": "Sign out", "href": "/signout" },
+    { "key": "download", "role": "link", "name": "Download export", "href": "/export.zip" },
+    { "key": "search", "role": "textbox", "name": "Search" },
+    { "key": "compose", "role": "button", "name": "New message" },
+    { "key": "react", "role": "button", "name": "Add reaction" },
+    { "key": "upload", "role": "button", "name": "Upload file" },
+    { "key": "schedule", "role": "button", "name": "Schedule for later" }
+  ]
+}
