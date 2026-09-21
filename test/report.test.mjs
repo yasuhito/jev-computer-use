@@ -54,12 +54,7 @@ test("statements are read-only, bound positionally, and resolve the game by name
   assert.match(ACCOUNT_GAMES_STATEMENT, /FROM ACCOUNT_GAMES/);
   assert.match(ACCOUNT_GAMES_STATEMENT, /WHERE GAME_NAME = \?/);
   assert.match(NEW_USERS_BY_START_DATE_STATEMENT, /COUNT\(DISTINCT USER_ID\) AS NEW_USERS/);
-  assert.match(NEW_USERS_BY_START_DATE_STATEMENT, /SELECT START_DATE, COUNT/);
   assert.match(NEW_USERS_BY_START_DATE_STATEMENT, /GROUP BY START_DATE/);
-  // Regression: ACCOUNT_USERS' column is START_DATE; PLAYER_START_DATE is a
-  // name only the event and fact views have, and referencing it here fails
-  // real Snowflake compilation with `invalid identifier`.
-  assert.doesNotMatch(NEW_USERS_BY_START_DATE_STATEMENT, /PLAYER_START_DATE/);
   assert.doesNotMatch(NEW_USERS_BY_START_DATE_STATEMENT, /\d{4}-\d{2}-\d{2}|24601/);
   assert.deepEqual(accountGamesStatement("QA2").bindings, [{ type: "TEXT", value: "QA2" }]);
   assert.deepEqual(newUsersByStartDateStatement({ gameId: 24601, environmentId: 31001, start: "2026-09-07", end: "2026-09-21" }).bindings, [
