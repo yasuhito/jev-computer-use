@@ -1,0 +1,19 @@
+# Template: timer for the daily New Users report. Every day at 10:00 JST
+# (01:00 UTC), independent of the host's own time zone. Persistent=true makes
+# a boot catch up a run missed while the host was down; the daily job's own
+# per-date record makes that catch-up idempotent.
+#
+# Enabling this timer on the deployment host is a separately authorized step;
+# see README "jev-cu-daily: unattended daily schedule" for the checklist.
+
+[Unit]
+Description=Daily 10:00 JST run of jev-cu-report.service
+
+[Timer]
+OnCalendar=*-*-* 10:00:00 Asia/Tokyo
+Persistent=true
+AccuracySec=1min
+Unit=jev-cu-report.service
+
+[Install]
+WantedBy=timers.target

@@ -17,7 +17,11 @@ contains three slices:
    typed report and the exact Slack text, and dry-run is the default; only an
    explicit `--mode send` against an exact channel allowlist hands the text to
    the `jev-cu-browse` workflow. See
-   [jev-cu-report](#jev-cu-report-qa2-daily-new-users-report).
+   [jev-cu-report](#jev-cu-report-qa2-daily-new-users-report). Its unattended
+   daily wrapper `jev-cu-daily` adds per-date durable idempotency, a run
+   lock, bounded retries, and systemd templates for one run per day at
+   10:00 JST. See
+   [jev-cu-daily](#jev-cu-daily-unattended-daily-schedule).
 
 Design reference: https://github.com/Sac-Y/Jev-cu (read its decision loop and
 policy gate for the long-term direction). This implementation is an original,
@@ -243,9 +247,10 @@ profile already recognized, followed by deterministic validation in code.
   authorization naming the destination and content (or a separately approved
   bounded daily-job mandate). This slice repairs the real-Slack destination
   recognition failure; the existing Beelink observe-only verification then
-  recognized `qa2` successfully. Scheduling and first-send authority remain
-  separate. The QA2 data source and report calculation are `jev-cu-report`
-  below.
+  recognized `qa2` successfully. The scheduling machinery exists as
+  `jev-cu-daily` (below); deploying it to the host, enabling the timer, and
+  the first real send remain separate, explicitly authorized steps. The QA2
+  data source and report calculation are `jev-cu-report` below.
 
 ### Modes
 
@@ -549,8 +554,121 @@ nor Slack.
 
 A live read-only smoke (two `SELECT`s under process-scoped credentials, no
 Slack) is the remaining validation once the Unity share has propagated; it is
-not part of CI. The daily schedule, deployment host, long-lived credentials,
-the real channel name, and the first real post are separate, explicitly
-authorized steps. Before unattended scheduling is activated, its deployment
-must serialize executions and add durable idempotency; the rendered-page check
-alone cannot prevent duplicates from concurrent runs or unloaded history.
+not part of CI. Unattended execution is wrapped by `jev-cu-daily`, which
+serializes executions and adds durable per-date idempotency on top of the
+rendered-page check (it alone cannot prevent duplicates from concurrent runs
+or unloaded history). Deploying that wrapper to the host, enabling its timer,
+and the first real post are separate, explicitly authorized steps.
+
+## jev-cu-daily: unattended daily schedule
+
+`jev-cu-daily` runs the QA2 report once per target date for an unattended
+scheduler (a systemd timer on the deployment host). One invocation posts at
+most one report, and it adds exactly the three properties a single-shot
+`jev-cu-report --mode send` run cannot provide:
+
+- **Durable per-date idempotency.** The target date is the last complete UTC
+  day, computed by the report's own date rule from the run's clock (at
+  10:00 JST = 01:00 UTC, that is yesterday). If
+  `<state-dir>/records/<date>.json` already marks the date posted, the run
+  does nothing (`already-posted`): no query, no browser. Otherwise it runs
+  the report in send mode and, only when the workflow verified the send, it
+  writes the record atomically (temp file + rename). Any other outcome -
+  runtime error, refusal, `unverified`, `no_match`, `escalate` - writes no
+  record, so a later run can resume the date without a second post: the
+  workflow's duplicate-marker guard refuses to send again while this date's
+  idempotency key is visible in the channel. A corrupt or unreadable record
+  fails the run (exit 1) instead of being ignored: fail closed, never risk a
+  second post.
+- **Single-run exclusion.** An exclusive lock file `<state-dir>/run.lock`
+  (O_EXCL create, holding pid, start instant, and the kernel boot id) is
+  held for the whole run. A live run makes a second invocation skip
+  immediately (`skipped-locked`, exit 0). A lock is broken only when it can
+  be proven stale: it names a boot other than the current one (left over
+  from before a reboot), its pid no longer exists, or it is older than the
+  staleness bound (12 h, covers pid reuse). An unreadable-but-young lock is
+  treated as live: its creator may still be writing it.
+- **Bounded retry.** A failed attempt is retried up to `--max-attempts`
+  (default 3) with exponential backoff (`--retry-base-sec` × 2^(n−1),
+  default base 60 s). Two classes fail on the first attempt because no
+  backoff can fix them: configuration errors (`missing_key`,
+  `missing_snowflake_config`, usage, a destination outside the allowlist)
+  and the `duplicate_post` refusal. The duplicate refusal is never recorded
+  as success: the marker may sit in an unposted draft (the composer's text
+  is part of the rendered tree), so it is not proof that a send happened.
+  The run then fails with no record and a human checks the channel.
+
+Unattended logs stay clean: the printed payload carries statuses and error
+codes only - never report numbers, the message text, the destination name,
+or any key - and the report's own stdout and stderr are captured and
+dropped. Debugging runs `jev-cu-report` directly, by a person.
+
+### Usage
+
+```sh
+node bin/jev-cu-daily.mjs --state-dir /var/lib/jev-cu-report
+```
+
+The unattended destination and its allowlist are both fixed to the exact
+channel `qa2`; flags and environment variables cannot redirect it.
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `--state-dir DIR` | durable state directory (records + run lock); must survive reboots | required |
+| `--max-attempts N` | send attempts per run, 1..10 | `3` |
+| `--retry-base-sec N` | backoff base seconds, 0..3600 | `60` |
+| `--dry-run` | run the report in dry-run mode, write no record (wiring check; needs no `TYPESAFE_API_KEY` or browser) | off |
+| `--profile`, `--cdp`, `--target`, `--min-confidence`, `--max-candidates`, `--model` | as in `jev-cu-report` | same defaults |
+
+`SNOWFLAKE_*` and `TYPESAFE_API_KEY` are required exactly as in
+`jev-cu-report` and are read from the environment only, never printed or
+stored.
+
+### Output
+
+One JSON object on stdout: `tool` (`jev-cu-daily`), `version`, `status`,
+`mode` (`send` or `dry-run`), `targetDate`, `attempts` (per attempt: the
+report's `status`, `refusalCode`, `errorCode` - codes only), and `record`
+(`date`, `status: "posted"`, `postedAt`, `attempts`, `recordedAt`) when one
+was written or already existed. `status` is one of `posted`,
+`already-posted` (recorded date), `skipped-locked` (another run holds the
+lock), `dry-run`, or `failed`. A usage error adds `error.code: "usage"`.
+
+Exit codes: `0` for posted, already-posted, skipped-locked, and dry-run; `1`
+for failed (retries exhausted or a non-retryable failure); `2` for usage
+errors. `--help` prints usage on stderr and exits 0.
+
+### Deployment (systemd)
+
+`deploy/systemd/jev-cu-report.service` and `jev-cu-report.timer` are
+templates: the marked lines are operator-specific (the checkout path, the
+user, the `EnvironmentFile` holding credentials, the
+state directory) and must be adapted at deployment time; no credential,
+account identifier, channel name, or other deployment-specific value belongs
+in the committed files. The timer fires once per day at `10:00 Asia/Tokyo`
+regardless of the host's time zone (`OnCalendar=*-*-* 10:00:00
+Asia/Tokyo`) and `Persistent=true` makes a boot catch up a run missed while
+the host was down; the per-date record makes that catch-up idempotent.
+
+Deployment checklist (each step is a separate, explicitly authorized
+operation; none of it is automated by this repository):
+
+1. Provision the host user, checkout, and state directory; create the
+   `EnvironmentFile` (mode 600) with the Snowflake and TypeSafe credentials;
+   start Chrome with remote debugging signed
+   in to the workspace.
+2. Verify without posting: run the service once by hand in `--dry-run` (the
+   report's dry-run needs no key and no browser), then confirm the timer's
+   next elapse with `systemctl list-timers`.
+3. Enabling the timer and the first real send require the operator's
+   explicit approval of the content and the destination.
+
+### Tests
+
+`npm test` covers the wrapper end to end offline: the fixture executor and
+the fake CDP session over the synthetic page (post, record, second-run skip,
+duplicate refusal, unverified retries, the composer latch, concurrent runs
+under the real lock), the state machinery against a temporary directory
+(atomic records, corrupt-record failure, boot-id/pid/age staleness), and the
+CLI contract including `--help` and usage errors through the committed bin.
+No network, no Slack, no secrets.

@@ -1,0 +1,38 @@
+# Template: oneshot service for the daily QA2 New Users report.
+# This file is a template: the marked lines are operator-specific and must be
+# adapted at deployment time. No credential, account identifier, channel name,
+# or other deployment-specific value belongs in the committed file - the
+# operator's EnvironmentFile carries them and is never committed.
+#
+# Enable the timer (jev-cu-report.timer), never this unit directly; activating
+# the schedule is a separately authorized step.
+
+[Unit]
+Description=Daily New Users report to Slack (jev-cu-daily, one run per target date)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Operator: the user that owns the deployment (its checkout, its CDP browser
+# session is reached over HTTP; this user needs no desktop access).
+User=jev-cu-report
+# Operator: mode 600, owned by User=. Holds SNOWFLAKE_* (account, user, key
+# path, warehouse, database, schema; optional role, passphrase, host),
+# TYPESAFE_API_KEY. The daily command itself fixes the exact destination to
+# qa2. Never committed, never printed.
+EnvironmentFile=/etc/jev-cu-report.env
+# Operator: the checkout path of this repository and the durable state
+# directory (records and run lock live there; it must survive reboots).
+ExecStart=/usr/bin/node /opt/jev-computer-use/bin/jev-cu-daily.mjs --state-dir /var/lib/jev-cu-report
+# One run may hold the lock for several minutes (bounded retries with
+# backoff); give it room.
+TimeoutStartSec=30min
+# The timer never overlaps itself (oneshot), and the daily run lock covers
+# manual runs racing the timer.
+# ReadWritePaths must match --state-dir above.
+ReadWritePaths=/var/lib/jev-cu-report
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true

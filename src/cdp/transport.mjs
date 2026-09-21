@@ -96,6 +96,20 @@ export function selectPageTarget(targets, { targetId = null, profile }) {
 }
 
 /**
+ * List this endpoint's page targets, pick one (explicit id, or the single
+ * match for the profile), and open the page session. The default connection
+ * path for callers that inject no connection of their own.
+ *
+ * @param {{endpoint: string, targetId: string|null, profile: import("../profiles/profile.mjs").Profile}} input
+ * @returns {Promise<import("./adapter.mjs").CdpSession>}
+ */
+export async function connectDefaultPage({ endpoint, targetId, profile }) {
+  const targets = await listPageTargets(endpoint);
+  const target = selectPageTarget(targets, { targetId, profile });
+  return connectPageSession(target);
+}
+
+/**
  * Open a page-bound CDP session.
  *
  * @param {PageTarget} target
