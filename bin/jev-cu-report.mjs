@@ -219,7 +219,7 @@ const defaultConnect = connectDefaultPage;
  * Run the CLI. The SQL executor, decision dependency, CDP connection, and
  * clock are injectable so tests run offline. Returns the process exit code.
  *
- * @param {{argv?: string[], stdout?: WritableLike, stderr?: WritableLike, env?: NodeJS.ProcessEnv, executor?: import("../src/snowflake/executor.mjs").SqlExecutor|null, decide?: import("../src/decide.mjs").DecideFn|null, connect?: ConnectFn, now?: () => number, sleep?: (ms: number) => Promise<void>, settleMs?: number}} [io]
+ * @param {{argv?: string[], stdout?: WritableLike, stderr?: WritableLike, env?: NodeJS.ProcessEnv, executor?: import("../src/snowflake/executor.mjs").SqlExecutor|null, decide?: import("../src/decide.mjs").DecideFn|null, connect?: ConnectFn, now?: () => number, reportNow?: number, sleep?: (ms: number) => Promise<void>, settleMs?: number}} [io]
  * @returns {Promise<number>}
  */
 export async function runCli({
@@ -231,10 +231,11 @@ export async function runCli({
   decide = null,
   connect = defaultConnect,
   now = Date.now,
+  reportNow = undefined,
   sleep = undefined,
   settleMs = undefined,
 } = {}) {
-  const { code, payload } = await runReportJob({ argv, stdout, stderr, env, executor, decide, connect, now, sleep, settleMs });
+  const { code, payload } = await runReportJob({ argv, stdout, stderr, env, executor, decide, connect, now, reportNow, sleep, settleMs });
   if (payload !== null) stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   return code;
 }
@@ -246,7 +247,7 @@ export async function runCli({
  * still written there; stdout is never touched, so a caller decides how the
  * payload is surfaced.
  *
- * @param {{argv?: string[], stdout?: WritableLike, stderr?: WritableLike, env?: NodeJS.ProcessEnv, executor?: import("../src/snowflake/executor.mjs").SqlExecutor|null, decide?: import("../src/decide.mjs").DecideFn|null, connect?: ConnectFn, now?: () => number, sleep?: (ms: number) => Promise<void>, settleMs?: number}} [io]
+ * @param {{argv?: string[], stdout?: WritableLike, stderr?: WritableLike, env?: NodeJS.ProcessEnv, executor?: import("../src/snowflake/executor.mjs").SqlExecutor|null, decide?: import("../src/decide.mjs").DecideFn|null, connect?: ConnectFn, now?: () => number, reportNow?: number, sleep?: (ms: number) => Promise<void>, settleMs?: number}} [io]
  * @returns {Promise<{code: number, payload: Record<string, unknown>|null}>}
  */
 export async function runReportJob({
@@ -257,6 +258,7 @@ export async function runReportJob({
   decide = null,
   connect = defaultConnect,
   now = Date.now,
+  reportNow = undefined,
   sleep = undefined,
   settleMs = undefined,
 } = {}) {
@@ -296,7 +298,7 @@ export async function runReportJob({
 
     const source = executor ?? createSqlApiExecutor({ env, now, ...(sleep ? { sleep } : {}) });
 
-    const clock = now();
+    const clock = reportNow ?? now();
     const window = completeUtcWindow(clock, DEFAULT_WINDOW_DAYS);
     const game = await resolveGameEnvironment(source, { gameName, environmentName });
     const rows = await fetchNewUsersByStartDate(source, { gameId: game.gameId, environmentId: game.environmentId, start: window.start, end: window.end });

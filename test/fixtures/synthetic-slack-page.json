@@ -4,6 +4,7 @@
   "shape": "links",
   "conversations": [
     { "id": "C0GENERAL", "name": "general", "kind": "channel" },
+    { "id": "C0QA2", "name": "qa2", "kind": "channel" },
     { "id": "C0QA2METRICS", "name": "qa2-metrics", "kind": "channel" },
     { "id": "C0RANDOM", "name": "random", "kind": "channel" },
     { "id": "D0ALICE", "name": "Alice Example", "kind": "dm" }

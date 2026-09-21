@@ -92,7 +92,7 @@ function baseIo(overrides = {}) {
   const runReport = fakeRunReport(overrides.results ?? [{ code: 0, payload: { status: "executed" } }]);
   /** @type {DailyIo} */
   const io = {
-    argv: ["--state-dir", "/state", "--destination", "qa2", "--allow-destination", "qa2"],
+    argv: ["--state-dir", "/state"],
     stderr: { write: () => {} },
     env: {},
     now: () => clock.t,
@@ -113,28 +113,17 @@ const existingRecord = /** @type {PostedRecord} */ ({
   recordedAt: "2026-09-21T01:00:00Z",
 });
 
-test("parseDailyArgs defaults to send mode with bounded attempts and accepts the env fallback", () => {
-  const o = parseDailyArgs(["--state-dir", "/s", "--destination", "qa"]);
+test("parseDailyArgs fixes unattended sends to qa2 regardless of environment", () => {
+  const o = parseDailyArgs(["--state-dir", "/s"], { env: { JEV_CU_REPORT_DESTINATION: "qa3", JEV_CU_REPORT_ALLOW_DESTINATION: "qa3" } });
   assert.equal(o.mode, "send");
   assert.equal(o.maxAttempts, DEFAULT_MAX_ATTEMPTS);
   assert.equal(o.retryBaseSec, DEFAULT_RETRY_BASE_SEC);
-  assert.deepEqual(o.allowDestinations, ["qa"]);
+  assert.equal(o.destination, "qa2");
+  assert.deepEqual(o.allowDestinations, ["qa2"]);
   assert.equal(parseDailyArgs(["--state-dir", "/s", "--dry-run"]).mode, "dry-run");
-  const env = parseDailyArgs(["--state-dir", "/s"], { env: { JEV_CU_REPORT_DESTINATION: "qa" } });
-  assert.equal(env.destination, "qa");
-  assert.deepEqual(env.allowDestinations, ["qa"]);
-  const envAllow = parseDailyArgs(["--state-dir", "/s"], { env: { JEV_CU_REPORT_DESTINATION: "qa", JEV_CU_REPORT_ALLOW_DESTINATION: "qa, qa2 " } });
-  assert.deepEqual(envAllow.allowDestinations, ["qa", "qa2"]);
-  // An explicit allowlist wins over the env list; the flag wins over the env destination.
-  const mixed = parseDailyArgs(["--state-dir", "/s", "--destination", "qa", "--allow-destination", "qa"], {
-    env: { JEV_CU_REPORT_DESTINATION: "other", JEV_CU_REPORT_ALLOW_DESTINATION: "other" },
-  });
-  assert.equal(mixed.destination, "qa");
-  assert.deepEqual(mixed.allowDestinations, ["qa"]);
 });
 
-test("parseDailyArgs validates every flag and requires a destination in send mode", () => {
-  assert.throws(() => parseDailyArgs([]), /--destination/);
+test("parseDailyArgs validates every flag and rejects destination overrides", () => {
   assert.throws(() => parseDailyArgs(["--state-dir", ""]), /state-dir/);
   assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--max-attempts", "0"]), /1\.\.10/);
   assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--max-attempts", "11"]), /1\.\.10/);
@@ -143,7 +132,8 @@ test("parseDailyArgs validates every flag and requires a destination in send mod
   assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--min-confidence", "1.5"]), /\[0, 1\]/);
   assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--max-candidates", "300"]), /1\.\.255/);
   assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--date", "2026-09-20"]), /unknown option/);
-  assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--destination", "qa", "--post"]), /unknown option/);
+  assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--destination", "qa2"]), /unknown option/);
+  assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--allow-destination", "qa2"]), /unknown option/);
   assert.throws(() => parseDailyArgs(["--state-dir"]), /requires a value/);
   // dry-run needs no destination.
   assert.equal(parseDailyArgs(["--state-dir", "/s", "--dry-run"]).destination, null);
@@ -209,7 +199,7 @@ test("a failed attempt is retried with exponential backoff until a verified send
       { code: 0, payload: { status: "unverified" } },
       { code: 0, payload: { status: "executed" } },
     ],
-    argv: ["--state-dir", "/state", "--destination", "qa2", "--allow-destination", "qa2", "--retry-base-sec", "10"],
+    argv: ["--state-dir", "/state", "--retry-base-sec", "10"],
   });
   const { code, payload } = await runDailyJob(io);
   assert.equal(code, 0);
@@ -238,10 +228,10 @@ test("retries keep the report clock on the run's original UTC date", async () =>
     })(),
     sleep: async () => {},
     runReport: async (input) => {
-      seen.push(input.now());
+      seen.push(input.reportNow);
       return seen.length === 1 ? { code: 1, payload: { status: "error", error: { code: "transport" } } } : { code: 0, payload: { status: "executed" } };
     },
-    argv: ["--state-dir", "/state", "--destination", "qa2", "--allow-destination", "qa2", "--retry-base-sec", "0"],
+    argv: ["--state-dir", "/state", "--retry-base-sec", "0"],
   });
   const { payload } = await runDailyJob(io);
   assert.equal(payload?.targetDate, "2026-09-20");
@@ -254,7 +244,7 @@ test("retries stop at the bound and the run fails with no record", async () => {
       { code: 0, payload: { status: "refused", send: { refusal: { code: "destination_mismatch" } } } },
       { code: 0, payload: { status: "refused", send: { refusal: { code: "destination_mismatch" } } } },
     ],
-    argv: ["--state-dir", "/state", "--destination", "qa2", "--allow-destination", "qa2", "--max-attempts", "2"],
+    argv: ["--state-dir", "/state", "--max-attempts", "2"],
   });
   const { code, payload } = await runDailyJob(io);
   assert.equal(code, 1);
@@ -281,7 +271,7 @@ test("configuration-class failures are not retried", async () => {
 test("a thrown report runner is contained as an error attempt", async () => {
   const { io, runReport } = baseIo({
     results: [{ throw: new Error("boom") }, { throw: new Error("boom") }],
-    argv: ["--state-dir", "/state", "--destination", "qa2", "--allow-destination", "qa2", "--max-attempts", "2"],
+    argv: ["--state-dir", "/state", "--max-attempts", "2"],
   });
   const { code, payload } = await runDailyJob(io);
   assert.equal(code, 1);
@@ -363,11 +353,11 @@ test("the printed payload carries no report data, destination, message, or key",
 test("usage errors exit 2 with a JSON error payload", async () => {
   /** @type {string[]} */
   const err = [];
-  const { code, payload } = await runDailyJob({ argv: ["--state-dir", "/state"], stderr: { write: (c) => err.push(c) }, env: {} });
+  const { code, payload } = await runDailyJob({ argv: [], stderr: { write: (c) => err.push(c) }, env: {} });
   assert.equal(code, 2);
   assert.equal(payload?.status, "failed");
   assert.equal(payload?.error?.code, "usage");
-  assert.match(String(payload?.error?.message), /--destination/);
+  assert.match(String(payload?.error?.message), /--state-dir/);
   assert.match(err.join(""), /jev-cu-daily:/);
   const help = await runDailyJob({ argv: ["--help"], stderr: { write: (c) => err.push(c) }, env: {} });
   assert.equal(help.code, 0);

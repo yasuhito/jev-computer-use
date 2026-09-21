@@ -19,9 +19,8 @@ Type=oneshot
 User=jev-cu-report
 # Operator: mode 600, owned by User=. Holds SNOWFLAKE_* (account, user, key
 # path, warehouse, database, schema; optional role, passphrase, host),
-# TYPESAFE_API_KEY, and optionally JEV_CU_REPORT_DESTINATION plus
-# JEV_CU_REPORT_ALLOW_DESTINATION (the exact channel name and allowlist; see
-# README "Daily schedule"). Never committed, never printed.
+# TYPESAFE_API_KEY. The daily command itself fixes the exact destination to
+# qa2. Never committed, never printed.
 EnvironmentFile=/etc/jev-cu-report.env
 # Operator: the checkout path of this repository and the durable state
 # directory (records and run lock live there; it must survive reboots).

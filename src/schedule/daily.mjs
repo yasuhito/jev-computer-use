@@ -54,6 +54,7 @@ export const DEFAULT_MAX_ATTEMPTS = 3;
 export const MAX_ATTEMPTS_BOUND = 10;
 export const DEFAULT_RETRY_BASE_SEC = 60;
 export const MAX_RETRY_BASE_SEC = 3600;
+export const DAILY_DESTINATION = "qa2";
 /** Error codes no amount of retrying can fix; the run fails on the first one. */
 export const NON_RETRYABLE_CODES = Object.freeze(
   new Set(["usage", "missing_key", "missing_snowflake_config", "destination_not_allowed", "invalid_text", "invalid_destination"]),
@@ -61,8 +62,6 @@ export const NON_RETRYABLE_CODES = Object.freeze(
 
 const VALUE_FLAGS = new Set([
   "--state-dir",
-  "--destination",
-  "--allow-destination",
   "--max-attempts",
   "--retry-base-sec",
   "--profile",
@@ -83,12 +82,6 @@ the browser session come from the operator's environment.
 
 Options:
   --state-dir DIR        durable state directory (records + run lock); required
-  --destination NAME     Slack channel name, exactly as the sidebar shows it
-                         (default: JEV_CU_REPORT_DESTINATION in the environment)
-  --allow-destination NAME
-                         exact allowlist entry; repeatable (default: the
-                         comma-separated JEV_CU_REPORT_ALLOW_DESTINATION entries,
-                         or the one --destination)
   --max-attempts N       send attempts per run, 1..${MAX_ATTEMPTS_BOUND} (default ${DEFAULT_MAX_ATTEMPTS})
   --retry-base-sec N     backoff base seconds, 0..${MAX_RETRY_BASE_SEC}; attempt n waits base*2^(n-1)
                          (default ${DEFAULT_RETRY_BASE_SEC})
@@ -101,9 +94,8 @@ Options:
   --model NAME           TypeSafe model override
   --help                 show this help and exit
 
-Environment: SNOWFLAKE_* and TYPESAFE_API_KEY as in jev-cu-report;
-JEV_CU_REPORT_DESTINATION and JEV_CU_REPORT_ALLOW_DESTINATION (optional,
-operator-provided, never printed). Exit codes: 0 posted, already-posted,
+Destination: the exact Slack channel qa2. Environment: SNOWFLAKE_* and
+TYPESAFE_API_KEY as in jev-cu-report. Exit codes: 0 posted, already-posted,
 skipped-locked, or dry-run; 1 failed; 2 usage error.`;
 
 /**
@@ -125,16 +117,15 @@ skipped-locked, or dry-run; 1 failed; 2 usage error.`;
 
 /**
  * @param {string[]} argv
- * @param {{env?: NodeJS.ProcessEnv}} [context]
  * @returns {DailyOptions}
  * @throws {Error} on unknown or malformed options (usage error)
  */
-export function parseDailyArgs(argv, { env = process.env } = {}) {
+export function parseDailyArgs(argv) {
   /** @type {DailyOptions} */
   const options = {
     stateDir: null,
-    destination: null,
-    allowDestinations: [],
+    destination: DAILY_DESTINATION,
+    allowDestinations: [DAILY_DESTINATION],
     mode: "send",
     maxAttempts: DEFAULT_MAX_ATTEMPTS,
     retryBaseSec: DEFAULT_RETRY_BASE_SEC,
@@ -183,12 +174,6 @@ export function parseDailyArgs(argv, { env = process.env } = {}) {
         if (inline.length === 0) throw new Error("--state-dir must be a non-empty path");
         options.stateDir = inline;
         break;
-      case "--destination":
-        options.destination = inline;
-        break;
-      case "--allow-destination":
-        options.allowDestinations.push(inline);
-        break;
       case "--max-attempts":
         options.maxAttempts = integer(flag, inline, 1, MAX_ATTEMPTS_BOUND);
         break;
@@ -218,20 +203,9 @@ export function parseDailyArgs(argv, { env = process.env } = {}) {
         break;
     }
   }
-  if (options.mode === "send" && !options.help) {
-    const envDestination = typeof env.JEV_CU_REPORT_DESTINATION === "string" && env.JEV_CU_REPORT_DESTINATION.length > 0 ? env.JEV_CU_REPORT_DESTINATION : null;
-    if (options.destination === null) options.destination = envDestination;
-    if (options.allowDestinations.length === 0) {
-      const raw = env.JEV_CU_REPORT_ALLOW_DESTINATION;
-      if (typeof raw === "string" && raw.length > 0) {
-        options.allowDestinations = raw
-          .split(",")
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0);
-      }
-    }
-    if (options.destination === null) throw new Error("send mode requires --destination (or JEV_CU_REPORT_DESTINATION in the environment)");
-    if (options.allowDestinations.length === 0) options.allowDestinations = [options.destination];
+  if (options.mode === "dry-run") {
+    options.destination = null;
+    options.allowDestinations = [];
   }
   return options;
 }
@@ -368,7 +342,7 @@ export async function runDailyJob({
       }
 
       for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
-        const result = await attemptOnce(options, runNow);
+        const result = await attemptOnce(options, runStartedAt);
         const note = noteOf(attempt, result);
         attempts.push(note);
         const p = result.payload;
@@ -410,10 +384,10 @@ export async function runDailyJob({
    * carry report data and channel names, and unattended logs must not.
    *
    * @param {DailyOptions} options
-   * @param {() => number} runNow
+   * @param {number} reportNow
    * @returns {Promise<ReportResult>}
    */
-  async function attemptOnce(options, runNow) {
+  async function attemptOnce(options, reportNow) {
     const runOne = runReport ?? runReportJob;
     /** @type {string[]} */
     const reportArgv = ["--mode", options.mode];
@@ -437,7 +411,8 @@ export async function runDailyJob({
         executor,
         decide,
         connect,
-        now: runNow,
+        now,
+        reportNow,
         sleep,
         settleMs,
       });

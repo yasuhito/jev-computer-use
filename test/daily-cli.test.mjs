@@ -15,7 +15,7 @@ import { loadFixtureExecutor } from "../src/snowflake/executor.mjs";
 const execFileAsync = promisify(execFile);
 const FIXTURE = fileURLToPath(new URL("./fixtures/unity-data-access.json", import.meta.url));
 const KEY = "unity-new-users:24601:31001:2026-09-20";
-const SEND_FLOW = [/^qa2-metrics/, /^Message #qa2-metrics/, /^Send now/];
+const SEND_FLOW = [/^qa2(?:$|\s|,|\()/, /^Message #qa2(?:$|\s)/, /^Send now/];
 /** 09:00 UTC on the 21st; the target date (last complete UTC day) is 2026-09-20. */
 const NOW_MS = Date.parse("2026-09-21T09:00:00Z");
 const DATE = "2026-09-20";
@@ -34,7 +34,6 @@ const sendFlow = (attempts) => Array.from({ length: attempts }, () => SEND_FLOW)
 /**
  * @typedef {object} CaptureOptions
  * @property {string[]} [extraArgv] appended to the default argv
- * @property {boolean} [bareArgv] default argv without the destination flags (env fallback tests)
  * @property {NodeJS.ProcessEnv} [env]
  * @property {ConnectFn} [connect]
  * @property {DecideFn} [decide]
@@ -52,7 +51,7 @@ async function captureIo(overrides = {}) {
   const clock = fakeClock();
   clock.advance(NOW_MS - clock.now());
   const executor = await loadFixtureExecutor(FIXTURE);
-  const argv = overrides.bareArgv ? ["--state-dir", stateDir] : ["--state-dir", stateDir, "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"];
+  const argv = ["--state-dir", stateDir];
   /** @type {DailyIo} */
   const io = {
     argv: [...argv, ...(overrides.extraArgv ?? [])],
@@ -107,7 +106,7 @@ test("the daily CLI posts once, records the date, and prints a scrubbed payload"
     assert.equal(fake.state.disconnected, true);
     // The daily payload itself carries no report data, message, destination, or key.
     const text = JSON.stringify(payload);
-    assert.doesNotMatch(text, /1,234|qa2-metrics|idempotency|new users \(Live\)|#qa2/i);
+    assert.doesNotMatch(text, /1,234|idempotency|new users \(Live\)|#qa2/i);
     assert.equal(c.err.join(""), "");
   } finally {
     await c.cleanup();
@@ -137,7 +136,7 @@ test("a duplicate-marker refusal ends the run without drafting and without a rec
   const c = await captureIo({
     connect: async () => {
       const fake = createFakeCdp();
-      fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", [`QA2 new users (Live) for 2026-09-20 (UTC)\n... key: ${KEY}`]);
+      fake.state.messages.set("/client/T0SYNTH/C0QA2", [`QA2 new users (Live) for 2026-09-20 (UTC)\n... key: ${KEY}`]);
       c.sessions.push(fake);
       return fake.session;
     },
@@ -191,11 +190,11 @@ test("a retry after an unverified send hits the marker and still never records o
   // must refuse the second send; the run fails with no record (the marker
   // alone is not proof of a send) and nothing is posted twice.
   const c = await captureIo({
-    decide: decideByLabel([...SEND_FLOW, /^qa2-metrics/]), // attempt 2 refuses at the duplicate check, right after the destination decision
+    decide: decideByLabel([...SEND_FLOW, /^qa2(?:$|\s|,|\()/]), // attempt 2 refuses at the duplicate check, right after the destination decision
     connect: async () => {
       const fake = createFakeCdp();
       if (c.sessions.length > 0) {
-        fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", [`QA2 new users (Live) for 2026-09-20 (UTC)\nNew users on 2026-09-20: 1,234\n... key: ${KEY}`]);
+        fake.state.messages.set("/client/T0SYNTH/C0QA2", [`QA2 new users (Live) for 2026-09-20 (UTC)\nNew users on 2026-09-20: 1,234\n... key: ${KEY}`]);
       } else {
         fake.state.posting = false; // attempt 1: the send click is swallowed, the workflow cannot verify
       }
@@ -241,7 +240,7 @@ test("a composer left holding an unposted draft is refused, never appended to", 
       if (c.sessions.length > 0) {
         // The retry reconnects to the same channel, whose composer still
         // holds the unposted draft from the first attempt.
-        fake.state.drafts.set("/client/T0SYNTH/C0QA2METRICS", /** @type {string} */ (draft).replaceAll("2026-09-20", "2026-09-19"));
+        fake.state.drafts.set("/client/T0SYNTH/C0QA2", /** @type {string} */ (draft).replaceAll("2026-09-20", "2026-09-19"));
       } else {
         fake.state.posting = false; // the send click is swallowed; the draft stays
       }
@@ -264,8 +263,8 @@ test("a composer left holding an unposted draft is refused, never appended to", 
   }
 });
 
-test("the operator environment can carry the destination instead of flags", async () => {
-  const c = await captureIo({ bareArgv: true, env: { JEV_CU_REPORT_DESTINATION: "qa2-metrics" } });
+test("the operator environment cannot redirect the fixed qa2 destination", async () => {
+  const c = await captureIo({ env: { JEV_CU_REPORT_DESTINATION: "qa2-metrics", JEV_CU_REPORT_ALLOW_DESTINATION: "qa2-metrics" } });
   try {
     const { code, payload } = await runDailyJob(c.io);
     assert.equal(code, 0);
@@ -277,7 +276,7 @@ test("the operator environment can carry the destination instead of flags", asyn
 });
 
 test("a dry run executes the read path and writes no record", async () => {
-  const c = await captureIo({ bareArgv: true, extraArgv: ["--dry-run"] });
+  const c = await captureIo({ extraArgv: ["--dry-run"] });
   try {
     const { code, payload } = await runDailyJob(c.io);
     assert.equal(code, 0);

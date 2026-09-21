@@ -606,20 +606,15 @@ dropped. Debugging runs `jev-cu-report` directly, by a person.
 ### Usage
 
 ```sh
-node bin/jev-cu-daily.mjs --state-dir /var/lib/jev-cu-report \
-  --destination "<channel>" --allow-destination "<channel>"
+node bin/jev-cu-daily.mjs --state-dir /var/lib/jev-cu-report
 ```
 
-The destination may instead come from the operator environment:
-`JEV_CU_REPORT_DESTINATION` (the exact channel name) and, optionally,
-`JEV_CU_REPORT_ALLOW_DESTINATION` (comma-separated allowlist). Flags win
-over the environment. Neither variable is ever printed.
+The unattended destination and its allowlist are both fixed to the exact
+channel `qa2`; flags and environment variables cannot redirect it.
 
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `--state-dir DIR` | durable state directory (records + run lock); must survive reboots | required |
-| `--destination NAME` | Slack channel, exactly as the sidebar names it | `JEV_CU_REPORT_DESTINATION` |
-| `--allow-destination NAME` | exact allowlist entry; repeatable | `JEV_CU_REPORT_ALLOW_DESTINATION`, else the one `--destination` |
 | `--max-attempts N` | send attempts per run, 1..10 | `3` |
 | `--retry-base-sec N` | backoff base seconds, 0..3600 | `60` |
 | `--dry-run` | run the report in dry-run mode, write no record (wiring check; needs no `TYPESAFE_API_KEY` or browser) | off |
@@ -647,7 +642,7 @@ errors. `--help` prints usage on stderr and exits 0.
 
 `deploy/systemd/jev-cu-report.service` and `jev-cu-report.timer` are
 templates: the marked lines are operator-specific (the checkout path, the
-user, the `EnvironmentFile` holding credentials and the destination, the
+user, the `EnvironmentFile` holding credentials, the
 state directory) and must be adapted at deployment time; no credential,
 account identifier, channel name, or other deployment-specific value belongs
 in the committed files. The timer fires once per day at `10:00 Asia/Tokyo`
@@ -659,8 +654,8 @@ Deployment checklist (each step is a separate, explicitly authorized
 operation; none of it is automated by this repository):
 
 1. Provision the host user, checkout, and state directory; create the
-   `EnvironmentFile` (mode 600) with the Snowflake and TypeSafe credentials
-   and the destination variables; start Chrome with remote debugging signed
+   `EnvironmentFile` (mode 600) with the Snowflake and TypeSafe credentials;
+   start Chrome with remote debugging signed
    in to the workspace.
 2. Verify without posting: run the service once by hand in `--dry-run` (the
    report's dry-run needs no key and no browser), then confirm the timer's
