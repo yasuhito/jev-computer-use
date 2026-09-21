@@ -227,6 +227,27 @@ test("a failed attempt is retried with exponential backoff until a verified send
   assert.equal(clock.t, NOW_MS + 30_000);
 });
 
+test("retries keep the report clock on the run's original UTC date", async () => {
+  const start = Date.parse("2026-09-21T23:59:59Z");
+  /** @type {number[]} */
+  const seen = [];
+  const { io } = baseIo({
+    now: (() => {
+      let calls = 0;
+      return () => (calls++ === 0 ? start : start + 2000);
+    })(),
+    sleep: async () => {},
+    runReport: async (input) => {
+      seen.push(input.now());
+      return seen.length === 1 ? { code: 1, payload: { status: "error", error: { code: "transport" } } } : { code: 0, payload: { status: "executed" } };
+    },
+    argv: ["--state-dir", "/state", "--destination", "qa2", "--allow-destination", "qa2", "--retry-base-sec", "0"],
+  });
+  const { payload } = await runDailyJob(io);
+  assert.equal(payload?.targetDate, "2026-09-20");
+  assert.deepEqual(seen, [start, start]);
+});
+
 test("retries stop at the bound and the run fails with no record", async () => {
   const { io, runReport } = baseIo({
     results: [

@@ -110,6 +110,22 @@ test("a lock older than the staleness bound is broken even if its pid is alive (
   }
 });
 
+test("concurrent stale-lock breakers allow exactly one replacement holder", async () => {
+  const dir = await tempState();
+  try {
+    const holder = { pid: process.pid, startedAt: new Date(NOW - LOCK_STALE_MS - 1).toISOString(), bootId: BOOT };
+    await writeFile(join(dir, "run.lock"), `${JSON.stringify(holder)}\n`);
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => acquireRunLock({ dir, pid: process.pid, bootId: BOOT, now: () => NOW })),
+    );
+    const acquired = results.filter((result) => result.ok);
+    assert.equal(acquired.length, 1);
+    await acquired[0].release();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a young lock with no readable holder is treated as live, not broken", async () => {
   const dir = await tempState();
   try {

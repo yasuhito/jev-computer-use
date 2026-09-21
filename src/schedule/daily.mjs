@@ -345,6 +345,8 @@ export async function runDailyJob({
    * @returns {Promise<DailyResult>}
    */
   async function runDaily(options) {
+    const runStartedAt = now();
+    const runNow = () => runStartedAt;
     const stateDir = /** @type {string} */ (options.stateDir);
     const state = store ?? new FileRecordStore(stateDir);
     const acquire =
@@ -352,12 +354,12 @@ export async function runDailyJob({
       ((/** @type {{dir: string, pid?: number, bootId?: string|null, now: () => number, staleMs?: number}} */ input) =>
         acquireRunLock({ ...input, ...(bootId !== undefined ? { bootId } : {}) }));
 
-    const held = await acquire({ dir: stateDir, now });
+    const held = await acquire({ dir: stateDir, now: runNow });
     if (!held.ok) {
-      return { code: 0, payload: dailyPayload({ status: "skipped-locked", mode: options.mode, targetDate: addDays(utcDateOf(now()), -1), attempts: [], record: null }) };
+      return { code: 0, payload: dailyPayload({ status: "skipped-locked", mode: options.mode, targetDate: addDays(utcDateOf(runStartedAt), -1), attempts: [], record: null }) };
     }
     try {
-      const targetDate = addDays(utcDateOf(now()), -1);
+      const targetDate = addDays(utcDateOf(runStartedAt), -1);
       /** @type {AttemptNote[]} */
       const attempts = [];
       const existing = await state.read(targetDate);
@@ -366,7 +368,7 @@ export async function runDailyJob({
       }
 
       for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
-        const result = await attemptOnce(options);
+        const result = await attemptOnce(options, runNow);
         const note = noteOf(attempt, result);
         attempts.push(note);
         const p = result.payload;
@@ -377,9 +379,9 @@ export async function runDailyJob({
           const record = /** @type {import("./state.mjs").PostedRecord} */ ({
             date: targetDate,
             status: "posted",
-            postedAt: new Date(now()).toISOString(),
+            postedAt: new Date(runStartedAt).toISOString(),
             attempts: attempt,
-            recordedAt: new Date(now()).toISOString(),
+            recordedAt: new Date(runStartedAt).toISOString(),
           });
           await state.write(record);
           return { code: 0, payload: dailyPayload({ status: "posted", mode: options.mode, targetDate, attempts, record }) };
@@ -408,9 +410,10 @@ export async function runDailyJob({
    * carry report data and channel names, and unattended logs must not.
    *
    * @param {DailyOptions} options
+   * @param {() => number} runNow
    * @returns {Promise<ReportResult>}
    */
-  async function attemptOnce(options) {
+  async function attemptOnce(options, runNow) {
     const runOne = runReport ?? runReportJob;
     /** @type {string[]} */
     const reportArgv = ["--mode", options.mode];
@@ -434,7 +437,7 @@ export async function runDailyJob({
         executor,
         decide,
         connect,
-        now,
+        now: runNow,
         sleep,
         settleMs,
       });

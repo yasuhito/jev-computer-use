@@ -25,6 +25,7 @@ import { join } from "node:path";
 /** How long a lock from the same boot with a live pid may stay before it may be broken. */
 export const LOCK_STALE_MS = 12 * 60 * 60 * 1000;
 const LOCK_FILE = "run.lock";
+const BREAKER_FILE = "run.lock.breaker";
 const RECORDS_DIR = "records";
 
 /**
@@ -180,9 +181,21 @@ export async function acquireRunLock({ dir, pid = process.pid, bootId = currentB
       holder = await readHolder(path);
       const mtimeMs = await lockMtimeMs(path);
       if (!isStale(holder, mtimeMs, { now: now(), bootId, staleMs })) return { ok: false, holder };
-      // Stale: break it. The unlink-then-retry race (two breakers) is resolved
-      // by the O_EXCL create: one of them wins the second attempt.
-      await unlink(path).catch(() => {});
+      const breakerPath = join(dir, BREAKER_FILE);
+      try {
+        await writeFileExclusive(breakerPath, `${pid}\n`);
+      } catch (breakerError) {
+        if (/** @type {NodeJS.ErrnoException} */ (breakerError).code === "EEXIST") return { ok: false, holder };
+        throw breakerError;
+      }
+      try {
+        holder = await readHolder(path);
+        const currentMtimeMs = await lockMtimeMs(path);
+        if (!isStale(holder, currentMtimeMs, { now: now(), bootId, staleMs })) return { ok: false, holder };
+        await unlink(path).catch(() => {});
+      } finally {
+        await unlink(breakerPath).catch(() => {});
+      }
     }
   }
   return { ok: false, holder };
