@@ -143,8 +143,10 @@ and every error path are deterministic code, not model judgment.
 ## Tests and CI
 
 Offline checks run deterministically with no network: `npm run lint` (ESLint),
-`npm run typecheck` (tsc with checkJs over the JSDoc types), and `npm test`,
-which injects a fake decision dependency so it never touches the API:
+`npm run typecheck` (tsc with checkJs over the JSDoc types), and `npm test`
+(`node --test test/*.test.mjs`; the file list is passed explicitly because
+Node 22 does not expand a bare directory argument), which injects a fake
+decision dependency so it never touches the API:
 
 ```sh
 npm run lint && npm run typecheck && npm test
