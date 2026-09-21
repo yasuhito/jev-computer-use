@@ -1,10 +1,11 @@
 {
   "name": "jev-computer-use",
   "version": "0.1.0",
-  "description": "Read-only Jev (TypeSafe System One) UI-candidate selection CLI for Pi",
+  "description": "Jev (TypeSafe System One) UI-candidate selection CLI plus a bounded CDP browser message workflow for Pi",
   "type": "module",
   "bin": {
-    "jev-cu": "bin/jev-cu.mjs"
+    "jev-cu": "bin/jev-cu.mjs",
+    "jev-cu-browse": "bin/jev-cu-browse.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -12,7 +13,8 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "serve:synthetic-slack": "node scripts/serve-synthetic-slack.mjs"
   },
   "license": "MIT",
   "dependencies": {
