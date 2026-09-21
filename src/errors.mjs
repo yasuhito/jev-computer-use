@@ -20,6 +20,7 @@ export const REFUSAL_CODES = Object.freeze({
   not_actionable: "the selected element is disabled or has no clickable box inside the viewport",
   text_mismatch: "the composer text read back from the page differs from the exact caller text",
   destination_mismatch: "the page is not at the selected destination",
+  duplicate_post: "the page already shows content carrying the caller's duplicate marker",
 });
 
 /** @typedef {keyof typeof REFUSAL_CODES} RefusalCode */

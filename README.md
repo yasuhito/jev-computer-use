@@ -1,7 +1,7 @@
 # jev-computer-use
 
 A Pi-usable computer-use system built in small vertical slices. This repository
-contains two slices:
+contains three slices:
 
 1. `jev-cu`: a read-only Node.js CLI that asks TypeSafe Jev (System One) which
    textual UI candidate fits a goal and reports the answer as structured JSON.
@@ -12,6 +12,12 @@ contains two slices:
    semantics and the allowlist. Observation and dry-run are the default;
    navigate, draft, and send must be requested explicitly. See
    [jev-cu-browse](#jev-cu-browse-bounded-browser-message-workflow).
+3. `jev-cu-report`: the QA2 daily New Users report. A read-only Snowflake
+   boundary reads Unity Analytics Data Access, deterministic code computes a
+   typed report and the exact Slack text, and dry-run is the default; only an
+   explicit `--mode send` against an exact channel allowlist hands the text to
+   the `jev-cu-browse` workflow. See
+   [jev-cu-report](#jev-cu-report-qa2-daily-new-users-report).
 
 Design reference: https://github.com/Sac-Y/Jev-cu (read its decision loop and
 policy gate for the long-term direction). This implementation is an original,
@@ -211,13 +217,21 @@ profile already recognized, followed by deterministic validation in code.
   is `text_mismatch`. After sending, the workflow waits for the composer to be
   empty and the exact text to appear on the page; otherwise the status is
   `unverified`.
+- **Caller guards for scheduled posts.** A caller may pass two extra
+  deterministic guards: `exactDestination` refuses (`destination_mismatch`)
+  unless the requested name is exactly the leading name of the chosen link's
+  accessible name (decoration such as `(channel)` or `, 3 unread` may follow;
+  `qa2-metrics-old` never matches `qa2-metrics`), and `duplicateMarker`
+  refuses (`duplicate_post`) to draft or send when the destination page
+  already shows a node whose text contains the marker. `jev-cu-report` always
+  sets both.
 - **Never a real Slack mutation in tests or smoke.** All tests use a fake CDP
   session over a synthetic page model, and the live-transport smoke uses a
   local synthetic page. A real Slack post requires a later, explicit
   authorization naming the destination and content (or a separately approved
-  bounded daily-job mandate). The QA2 user-count data source, report
-  calculation, real workspace and channel, schedule, credentials, and
-  deployment are a later integration task and are not implemented here.
+  bounded daily-job mandate). The QA2 data source and report calculation are
+  `jev-cu-report` below; the real workspace and channel, schedule, long-lived
+  credentials, and deployment host remain a later, separately authorized step.
 
 ### Modes
 
@@ -292,7 +306,8 @@ point, URLs, and read-back), the post verification, and in dry-run a `plan`.
 | `changed_state` | URL, candidate set, or the selected element changed before acting |
 | `not_actionable` | the element is disabled or has no clickable box in the viewport |
 | `text_mismatch` | the composer was not empty, or the read-back differs from the exact text |
-| `destination_mismatch` | the page is not at the selected destination |
+| `destination_mismatch` | the page is not at the selected destination, or (with `exactDestination`) the chosen link does not name the requested destination exactly |
+| `duplicate_post` | (with `duplicateMarker`) the destination already shows content carrying the marker |
 
 Exit codes: `0` for every workflow outcome including `refused` and
 `unverified`; `1` for runtime errors (`error.code` is `api`, `transport`, or
@@ -318,3 +333,207 @@ node bin/jev-cu-browse.mjs --profile slack-local-synthetic --mode observe
 The synthetic page is rendered from the same JSON model the fake CDP uses; it
 imitates only the shapes the Slack profile cares about plus decoys the profile
 must never offer, and it stores nothing.
+
+## jev-cu-report: QA2 daily New Users report
+
+`jev-cu-report` produces one day's New Users report for the game QA2 from
+Unity Analytics Data Access and renders it as exact Slack text. Everything
+that decides a number, a date, a query, a retry, or a duplicate is
+deterministic code; no model is involved until the optional Slack stage, and
+there the model only ever picks among candidates the Slack profile already
+recognized, exactly as in `jev-cu-browse`.
+
+### Data source: Unity Analytics Data Access (Snowflake share)
+
+Unity's supported path to raw analytics is the Snowflake Secure Data Share
+`UNITYLIVEOPS.UNITY_ANALYTICS_PDA` (Unity docs: "Set up Data Access"). It is
+a share, so it is read-only by construction; a database is created from it
+in the consumer account and queried with the consumer's own warehouse. The
+views and columns this slice uses follow the official reference
+(https://docs.unity.com/en-us/analytics/data-access/data-access-views):
+
+| View | Columns used | Purpose |
+| --- | --- | --- |
+| `ACCOUNT_GAMES` | `ACCOUNT_NAME`, `GAME_NAME`, `GAME_ID`, `ENVIRONMENT_NAME`, `ENVIRONMENT_ID`, `UNITY_PROJECT_ID` | resolve QA2 and its production environment at run time; no `GAME_ID` is hard-coded |
+| `ACCOUNT_USERS` | `GAME_ID`, `ENVIRONMENT_ID`, `USER_ID`, `START_DATE` (DATE) | one row per user; `START_DATE` is the player's start date, the fact the event and fact views expose as `PLAYER_START_DATE` |
+
+The two statements (`src/unity/data-access.mjs`) are single `SELECT`s with
+positional bindings; the database, schema, warehouse, and role travel as
+request context, so no identifier is ever interpolated into SQL:
+
+```sql
+SELECT ACCOUNT_NAME, GAME_NAME, GAME_ID, ENVIRONMENT_NAME, ENVIRONMENT_ID, UNITY_PROJECT_ID
+FROM ACCOUNT_GAMES
+WHERE GAME_NAME = ?
+ORDER BY GAME_ID, ENVIRONMENT_ID
+```
+
+```sql
+SELECT START_DATE AS PLAYER_START_DATE, COUNT(DISTINCT USER_ID) AS NEW_USERS
+FROM ACCOUNT_USERS
+WHERE GAME_ID = ? AND ENVIRONMENT_ID = ?
+  AND START_DATE >= TO_DATE(?, 'YYYY-MM-DD') AND START_DATE < TO_DATE(?, 'YYYY-MM-DD')
+GROUP BY START_DATE
+ORDER BY START_DATE
+```
+
+Game resolution is code: rows whose `GAME_NAME` equals `--game` exactly
+(default `QA2`) must share one `GAME_ID`, and exactly one of them must have
+`ENVIRONMENT_NAME` equal to `--environment` (default `production`, compared
+case-insensitively). Zero or several rows at any step is an error
+(`game_not_found`, `ambiguous_game`, `environment_not_found`,
+`ambiguous_environment`); the run never guesses.
+
+### Definitions
+
+All dates are UTC calendar days. With `now` (the real clock or `--now`):
+
+- **window**: the `--days` (default 14, at least 8) complete UTC days before
+  today, `[today - days, today)`. The current UTC day is always excluded
+  because it is still accumulating.
+- **reportDate**: the last complete day, `today - 1`.
+- **New users on a day**: `COUNT(DISTINCT USER_ID)` of users whose player
+  start date is that day. Days with no row count 0 and are listed in
+  `missingDates` (and in the message) so silence is visible.
+- **dayBefore**: `reportDate - 1`; `delta = report - dayBefore`;
+  `deltaPercent = delta / dayBefore * 100`, null when `dayBefore` is 0.
+- **trailing7DayAverage**: mean of the 7 days `reportDate - 7 .. reportDate - 1`
+  (the report day is not in its own baseline); delta and deltaPercent as
+  above against the unrounded mean; values rounded to 1 decimal.
+- **trend**: against the trailing average: `flat` when |deltaPercent| <= 5,
+  otherwise `up` or `down` by sign; with a zero baseline, `up` if the day is
+  positive, else `flat`.
+- **idempotencyKey**: `unity-new-users:<GAME_ID>:<ENVIRONMENT_ID>:<reportDate>`.
+  It is part of the message text and is the `duplicateMarker` handed to the
+  Slack workflow, so re-running the job for the same day refuses instead of
+  posting twice.
+
+Message (plain text, no mrkdwn, no mentions, no links; identical input gives
+identical output):
+
+```
+QA2 new users (production) for 2026-09-20 (UTC)
+New users on 2026-09-20: 1,234
+vs 2026-09-19 (1,178): +56 (+4.8%)
+vs trailing 7-day avg 2026-09-13..2026-09-19 (1,035.4): +198.6 (+19.2%), trend: up
+Last 7 days (UTC): 09-14 1,300 | 09-15 1,220 | 09-16 1,185 | 09-17 1,160 | 09-18 1,205 | 09-19 1,178 | 09-20 1,234
+Days with no rows (counted as 0): 2026-09-13
+Source: Unity Analytics Data Access (Snowflake) | key: unity-new-users:24601:31001:2026-09-20
+```
+
+### Snowflake access and cost expectations
+
+The live executor (`src/snowflake/sql-api.mjs`) uses the Snowflake SQL REST
+API with key-pair JWT authentication (RS256, built with `node:crypto`; no
+Snowflake SDK), which suits an unattended read-only job: no password, no
+browser login, a token that lives ten minutes. Connection facts are read from
+the environment only and are never printed, echoed in errors, or written
+anywhere:
+
+| Variable | Meaning |
+| --- | --- |
+| `SNOWFLAKE_ACCOUNT` | account identifier (`ORGNAME-ACCOUNTNAME`, or a locator; region segments are dropped for the JWT) |
+| `SNOWFLAKE_USER` | the service user that holds the public key |
+| `SNOWFLAKE_PRIVATE_KEY_PATH` | PKCS#8 PEM private key file; `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` if encrypted |
+| `SNOWFLAKE_WAREHOUSE` | warehouse to run on |
+| `SNOWFLAKE_DATABASE` / `SNOWFLAKE_SCHEMA` | the database created from the Unity share and the schema holding the views |
+| `SNOWFLAKE_ROLE` | optional role |
+| `SNOWFLAKE_HOST` | optional host override (default `<account>.snowflakecomputing.com`) |
+
+Safety properties of the executor: only a single `SELECT` without `;` and
+without any DDL/DML keyword can be sent (checked in code before any request;
+the service user's own read-only grants are the second fence); HTTP 429, 5xx,
+and network failures are retried at most three times with fixed 1 s, 2 s,
+4 s backoff; an in-progress statement (HTTP 202) is polled at most 30 times,
+2 s apart; 4xx failures are not retried; a key that cannot be loaded fails
+before any request. `parameters.TIMEZONE` is `UTC`; result cells are decoded
+from the documented SQL API encoding (DATE as days since epoch, NUMBER as an
+integer string).
+
+Cost: the job runs two small queries once a day. Expect to run it on an
+X-Small warehouse with auto-suspend set to the minimum (60 s) and auto-resume
+on, so compute is billed for roughly one minimum billing period per run;
+`ACCOUNT_USERS` is scanned once per run. This README does not claim a fixed
+bill: warehouse settings, the share's size, and any other use of the
+warehouse determine it, and none of them is created or changed by this code.
+
+### Usage
+
+Dry-run (default) against the recorded fixture. Prints the typed report and
+the exact message; needs no credential, no key, and no browser:
+
+```sh
+node bin/jev-cu-report.mjs --source fixture --fixture test/fixtures/unity-data-access.json \
+  --now 2026-09-21T09:00:00Z
+```
+
+Dry-run against Snowflake (SNOWFLAKE_* in the environment; SELECT only):
+
+```sh
+node bin/jev-cu-report.mjs
+```
+
+Send, only with an explicit request and an exact allowlist, through the
+`jev-cu-browse` workflow (Chrome with remote debugging, `TYPESAFE_API_KEY` in
+the environment). The destination must equal one `--allow-destination`
+character for character; the workflow then additionally requires the chosen
+sidebar link to name it exactly, refuses if the channel already shows the
+day's idempotency key, and keeps every freshness, read-back, and
+post-verification guard:
+
+```sh
+node bin/jev-cu-report.mjs --mode send --destination qa2-metrics --allow-destination qa2-metrics
+```
+
+`--mode draft` leaves the exact text in the composer without sending, for a
+rehearsal. Options:
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `--source KIND` | `snowflake` or `fixture` | `snowflake` |
+| `--fixture FILE` | recorded result sets (with `--source fixture`) | |
+| `--game NAME` | `GAME_NAME` to resolve | `QA2` |
+| `--environment NAME` | `ENVIRONMENT_NAME` to select | `production` |
+| `--days N` | complete UTC days in the window, 8..90 | `14` |
+| `--series-days N` | days shown in the message series, 1..days | `7` |
+| `--now ISO` | freeze the clock (ISO-8601 instant with zone) | real time |
+| `--mode MODE` | `dry-run`, `draft`, `send` | `dry-run` |
+| `--destination NAME` | Slack channel, exactly as the sidebar names it | required for draft and send |
+| `--allow-destination NAME` | exact allowlist entry; repeatable | required for draft and send |
+| `--profile`, `--cdp`, `--target`, `--min-confidence`, `--max-candidates`, `--model` | as in `jev-cu-browse` | same defaults |
+
+### Output
+
+One JSON object per run: `tool`, `version`, `mode`, `source` (`kind`, the
+requested game and environment, and the window), `report` (the typed report:
+`game`, `window`, `reportDate`, `previousDay`, `series`, `missingDates`,
+`comparison`, `idempotencyKey`), `message` (the exact text), `delivery`
+(destination, allowlist, and the two guards), `status`, and `send`. In
+dry-run `status` is `dry-run` and `send` is null. In draft and send modes
+`send` is the full `jev-cu-browse` report and `status` repeats its status
+(`executed`, `refused`, `unverified`, `no_match`, `escalate`).
+
+Exit codes: `0` for every outcome including `refused` and `unverified`; `1`
+for runtime errors (`error.code`: `snowflake_<code>` for transport, protocol,
+auth, timeout, or decode failures; the data-access codes above;
+`missing_snowflake_config`; `missing_key`; `transport`; `api`); `2` for usage
+and validation errors (including `destination_not_allowed`).
+
+### Tests and the fixture
+
+`npm test` covers the read-only guard, SQL API encoding and the JWT (verified
+against the generated public key), the REST executor with a scripted fetch
+(polling, partitions, retries, auth failures), game resolution and every
+failure mode, the report arithmetic, the message, and the CLI end to end with
+the fake CDP session over the synthetic Slack page: a send that posts the
+exact message, a duplicate refusal, an exact-destination refusal, and a draft
+that never sends. `test/fixtures/unity-data-access.json` records result sets
+in the SQL API encoding with the official column names; it is synthetic data,
+not a real account. Nothing in the test suite or the dry-run touches Snowflake
+or Slack.
+
+A live read-only smoke (two `SELECT`s under process-scoped credentials, no
+Slack) is the remaining validation once the Unity share has propagated; it is
+not part of CI. The daily schedule, deployment host, long-lived credentials,
+the real channel name, and the first real post are separate, explicitly
+authorized steps.
