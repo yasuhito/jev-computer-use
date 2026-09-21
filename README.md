@@ -166,8 +166,8 @@ node bin/jev-cu.mjs --input examples/calendar-previous-month.json
 ## jev-cu-browse: bounded browser message workflow
 
 `jev-cu-browse` drives one Chrome page over CDP through a fixed three-stage
-workflow: open one caller-named conversation, draft the caller's exact text
-into that conversation's composer, and submit it only when the caller asks for
+workflow: open one caller-named Slack channel, draft the caller's exact text
+into that channel's composer, and submit it only when the caller asks for
 `--mode send`. Each stage is one TypeSafe Jev Choice over candidates that a
 profile already recognized, followed by deterministic validation in code.
 
@@ -257,7 +257,7 @@ Options:
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `--profile NAME` | `slack` or `slack-local-synthetic` | `slack` |
-| `--destination NAME` | the conversation to open, as the caller names it | required beyond observe |
+| `--destination NAME` | the Slack channel to open, as the caller names it | required beyond observe |
 | `--text TEXT` / `--text-file FILE` | exact message text (draft and send); newline and tab allowed, other control characters rejected, at most 4000 characters | |
 | `--mode MODE` | `observe`, `dry-run`, `navigate`, `draft`, `send` | `dry-run` |
 | `--cdp URL` | DevTools HTTP endpoint | `http://127.0.0.1:9222` |
