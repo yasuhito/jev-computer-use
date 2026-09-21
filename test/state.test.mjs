@@ -120,7 +120,9 @@ test("concurrent stale-lock breakers allow exactly one replacement holder", asyn
     );
     const acquired = results.filter((result) => result.ok);
     assert.equal(acquired.length, 1);
-    await acquired[0].release();
+    const [lock] = acquired;
+    assert.ok(lock);
+    await lock.release();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
