@@ -185,7 +185,9 @@ test("click hit-tests in page coordinates after scrolling", async () => {
   const dest = find(snapshot, /^random/);
   const report = await adapter.click(snapshot, dest.id, { expectUrl: dest.url });
   assert.deepEqual(report.point, { x: 170, y: 75 });
-  assert.deepEqual(fake.methodCalls("DOM.getNodeForLocation")[0].params, { x: 170, y: 155, includeUserAgentShadowDOM: false });
+  const [hitTest] = fake.methodCalls("DOM.getNodeForLocation");
+  assert.ok(hitTest);
+  assert.deepEqual(hitTest.params, { x: 170, y: 155, includeUserAgentShadowDOM: false });
   assert.equal(report.verified, true);
   assert.equal(fake.currentUrl(), report.urlAfter);
 });
