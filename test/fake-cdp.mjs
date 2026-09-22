@@ -28,7 +28,7 @@ export const TEXT_CHILD_OFFSET = 10_000;
 const slackParagraphs = (s) => (s === "\n" ? s : s.replace(/\n/g, "\n\n"));
 
 /**
- * @param {{origin?: string, startPath?: string, targetId?: string, viewport?: {width: number, height: number}, hitReturnsChild?: boolean, page?: import("./fixtures/synthetic-slack.mjs").SyntheticPage, splitMessages?: boolean}} [options]
+ * @param {{origin?: string, startPath?: string, targetId?: string, viewport?: {width: number, height: number, pageX?: number, pageY?: number}, hitReturnsChild?: boolean, page?: import("./fixtures/synthetic-slack.mjs").SyntheticPage, splitMessages?: boolean}} [options]
  */
 export function createFakeCdp({
   origin = "https://app.slack.com",
@@ -249,12 +249,15 @@ export function createFakeCdp({
         const e = elementById(Number(params.backendNodeId));
         if (!e) throw new CdpProtocolError(method, { code: -32000, message: "Could not find node with given id" });
         const b = box(e);
-        const content = [b.x, b.y, b.x + b.width, b.y, b.x + b.width, b.y + b.height, b.x, b.y + b.height];
+        const x = b.x - (state.viewport.pageX ?? 0);
+        const y = b.y - (state.viewport.pageY ?? 0);
+        const content = [x, y, x + b.width, y, x + b.width, y + b.height, x, y + b.height];
         return { model: { content, padding: content, border: content, margin: content, width: b.width, height: b.height } };
       }
       case "Page.getLayoutMetrics":
         return {
-          cssLayoutViewport: { pageX: 0, pageY: 0, clientWidth: state.viewport.width, clientHeight: state.viewport.height },
+          cssLayoutViewport: { pageX: state.viewport.pageX ?? 0, pageY: state.viewport.pageY ?? 0, clientWidth: state.viewport.width, clientHeight: state.viewport.height },
+          cssVisualViewport: { pageX: state.viewport.pageX ?? 0, pageY: state.viewport.pageY ?? 0, clientWidth: state.viewport.width, clientHeight: state.viewport.height },
         };
       case "DOM.getNodeForLocation": {
         const e = elementAt(Number(params.x), Number(params.y));
@@ -275,7 +278,7 @@ export function createFakeCdp({
       }
       case "Input.dispatchMouseEvent": {
         if (params.type === "mouseReleased") {
-          const e = elementAt(Number(params.x), Number(params.y));
+          const e = elementAt(Number(params.x) + (state.viewport.pageX ?? 0), Number(params.y) + (state.viewport.pageY ?? 0));
           if (e) activate(e);
         }
         return {};

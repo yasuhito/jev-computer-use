@@ -179,6 +179,17 @@ test("click accepts a hit test that resolves to a descendant of the target", asy
   assert.equal(fake.methodCalls("DOM.describeNode").filter((c) => c.params.depth === -1).length, 1);
 });
 
+test("click hit-tests in page coordinates after scrolling", async () => {
+  const { fake, adapter } = setup({ viewport: { width: 1280, height: 400, pageX: 0, pageY: 80 } });
+  const snapshot = await adapter.observe();
+  const dest = find(snapshot, /^random/);
+  const report = await adapter.click(snapshot, dest.id, { expectUrl: dest.url });
+  assert.deepEqual(report.point, { x: 170, y: 75 });
+  assert.deepEqual(fake.methodCalls("DOM.getNodeForLocation")[0].params, { x: 170, y: 155, includeUserAgentShadowDOM: false });
+  assert.equal(report.verified, true);
+  assert.equal(fake.currentUrl(), report.urlAfter);
+});
+
 test("click reports unverified when the page never reaches the expected URL", async () => {
   const { fake, adapter } = setup();
   fake.state.navigating = false;

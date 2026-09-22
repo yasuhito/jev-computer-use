@@ -540,7 +540,8 @@ export class CdpAdapter {
     }
     const x = Math.round(sx / 4);
     const y = Math.round(sy / 4);
-    const { cssLayoutViewport } = await this.#send("Page.getLayoutMetrics", {}, "locate");
+    const { cssVisualViewport, cssLayoutViewport } = await this.#send("Page.getLayoutMetrics", {}, "locate");
+    const viewport = cssVisualViewport ?? cssLayoutViewport;
     const width = Number(cssLayoutViewport?.clientWidth);
     const height = Number(cssLayoutViewport?.clientHeight);
     if (!(x >= 0 && y >= 0 && x < width && y < height)) {
@@ -548,7 +549,11 @@ export class CdpAdapter {
     }
     const hit = await this.#send(
       "DOM.getNodeForLocation",
-      { x, y, includeUserAgentShadowDOM: false },
+      {
+        x: x + Number(viewport?.pageX ?? 0),
+        y: y + Number(viewport?.pageY ?? 0),
+        includeUserAgentShadowDOM: false,
+      },
       "locate",
     );
     const hitId = hit?.backendNodeId;
