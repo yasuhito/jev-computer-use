@@ -68,8 +68,8 @@ export function createFakeCdp({
     transformDraft: null,
     /**
      * Value a completed send leaves in the composer. Default ""; a page whose
-     * cleared blank composer keeps the blank editor artifact reports a
-     * whitespace-only value (Chromium: a single U+000A) instead.
+     * cleared blank composer keeps the blank editor artifact reports a single
+     * U+000A instead.
      */
     clearedDraft: "",
   };
@@ -259,12 +259,9 @@ export function createFakeCdp({
         if (focused && focused.role === "textbox") {
           if (focused.key === "composer") {
             const previous = currentDraft();
-            // A blank rich-text editor's accessibility value is a
-            // whitespace-only artifact (Chromium: a single U+000A), not
-            // document content; inserted text replaces it, the way the real
-            // page does, so the read-back is exactly the inserted text.
-            const next =
-              previous.trim() === "" ? String(params.text) : previous + String(params.text);
+            // Chromium's single-U+000A blank-editor artifact is not document
+            // content, so inserted text replaces it as on the real page.
+            const next = previous === "" || previous === "\n" ? String(params.text) : previous + String(params.text);
             state.drafts.set(state.path, state.transformDraft ? state.transformDraft(next) : next);
           } else {
             state.sideEffects.push(`insertText into ${focused.name}`);

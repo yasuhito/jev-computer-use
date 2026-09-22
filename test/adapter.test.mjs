@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CdpAdapter, ALLOWED_CDP_METHODS, MAX_ATTRIBUTE_LOOKUPS, urlReached, digestCandidates } from "../src/cdp/adapter.mjs";
+import { CdpAdapter, ALLOWED_CDP_METHODS, MAX_ATTRIBUTE_LOOKUPS, urlReached, digestCandidates, editorValueIsEmpty } from "../src/cdp/adapter.mjs";
 import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
 import { RefusalError, TransportError, CdpProtocolError } from "../src/errors.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
@@ -324,7 +324,7 @@ test("insertText refuses a composer that already holds text and a read-back that
   }
 });
 
-test("insertText classifies a whitespace-only editor value as empty: the blank newline draft inserts normally", async () => {
+test("insertText accepts the exact blank-editor newline artifact", async () => {
   // The Beelink reproduction: a visually empty composer (no text, the send
   // control disabled) whose accessibility value is a single U+000A newline,
   // so an exact "" precheck misread the blank composer as an existing draft.
@@ -340,20 +340,26 @@ test("insertText classifies a whitespace-only editor value as empty: the blank n
   assert.deepEqual(fake.methodCalls("Input.insertText").map((c) => c.params.text), ["users today: 1234\nchange: +5%"]);
 });
 
-test("insertText classifies other whitespace-only editor values as empty", async () => {
-  // Every value an editor can carry while still being visually blank: tab,
-  // spaces, carriage returns, non-breaking and ideographic spaces, and
-  // combinations.
-  for (const blank of ["\t", " ", "\r", "\r\n", "\u00A0", "\u3000", " \n\t ", "\u00A0\n"]) {
+test("insertText refuses whitespace other than the exact blank-editor newline", async () => {
+  for (const draft of ["\t", " ", "\r", "\r\n", "\n\n", "\u00A0", "\u3000", " \n\t ", "\u00A0\n"]) {
     const { fake, adapter } = setup();
-    fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", blank);
+    fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", draft);
     const snapshot = await adapter.observe();
     const composer = find(snapshot, /Message #general/);
-    const report = await adapter.insertText(snapshot, composer.id, "exact");
-    assert.equal(report.verified, true);
-    assert.equal(report.readBack, "exact");
-    assert.equal(fake.currentDraft(), "exact");
-    assert.equal(find(snapshot, /Send now/).disabled, true);
+    await rejectsRefusal(adapter.insertText(snapshot, composer.id, "new"), "text_mismatch");
+    assert.equal(fake.methodCalls("Input.insertText").length, 0);
+    assert.equal(fake.methodCalls("Input.dispatchMouseEvent").length, 0);
+    assert.equal(fake.currentDraft(), draft, "the refused draft is untouched");
+  }
+});
+
+test("editor emptiness accepts only absent, empty, and exact single-newline values", () => {
+  assert.equal(editorValueIsEmpty(null), true);
+  assert.equal(editorValueIsEmpty(undefined), true);
+  assert.equal(editorValueIsEmpty(""), true);
+  assert.equal(editorValueIsEmpty("\n"), true);
+  for (const value of [" ", "\t", "\r", "\r\n", "\n\n", "\u00A0", "\u3000"]) {
+    assert.equal(editorValueIsEmpty(value), false);
   }
 });
 

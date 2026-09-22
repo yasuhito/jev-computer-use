@@ -458,8 +458,8 @@ export async function runWorkflow({
       if (!urlReached(snapshot.target.url, destinationUrl)) return false;
       const composerNow = snapshot.candidates.find((c) => c.backendNodeId === composer.backendNodeId);
       // The same emptiness classification as insertText's precheck: a page
-      // whose cleared composer keeps the blank editor artifact (a
-      // whitespace-only value) counts as empty; non-whitespace is a draft.
+      // whose cleared composer keeps the exact single-U+000A blank editor
+      // artifact counts as empty; every other nonempty value is a draft.
       if (!composerNow || !editorValueIsEmpty(composerNow.value)) return false;
       const found = await adapter.findText(text);
       return found.count > 0;
