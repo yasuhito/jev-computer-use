@@ -24,13 +24,16 @@ const cExecutor = await loadFixtureExecutor(FIXTURE);
 const cClock = fakeClock();
 cClock.advance(NOW_MS - cClock.now());
 
-function createDailyFakeCdp() {
+/**
+ * @param {Parameters<typeof createFakeCdp>[0]} [options]
+ */
+function createDailyFakeCdp(options = {}) {
   const page = loadSyntheticPage();
   const destination = page.conversations.find((conversation) => conversation.id === "C0QA2METRICS");
   assert.ok(destination);
   destination.id = "C0QA2";
   destination.name = "qa2";
-  return createFakeCdp({ page });
+  return createFakeCdp({ page, ...options });
 }
 
 /** @typedef {NonNullable<Parameters<typeof runDailyJob>[0]>} DailyIo */
@@ -162,6 +165,35 @@ test("a duplicate-marker refusal ends the run without drafting and without a rec
     assert.equal(fake.methodCalls("Input.insertText").length, 0);
     assert.equal(fake.currentMessages().length, 1);
     await assert.rejects(readFile(c.recordPath), { code: "ENOENT" });
+  } finally {
+    await c.cleanup();
+  }
+});
+
+test("a split-paragraph post verifies and records the date (the 2026-09-21 fix)", async () => {
+  // The 2026-09-21 incident: the send landed but the real client renders the
+  // six paragraphs as separate accessibility nodes, so the post verification
+  // failed and no record was written. With the paragraph-sequence
+  // verification the same rendering verifies, so the unattended run records
+  // the date like any other verified send.
+  const c = await captureIo({
+    connect: async () => {
+      const fake = createDailyFakeCdp({ splitMessages: true });
+      c.sessions.push(fake);
+      return fake.session;
+    },
+  });
+  try {
+    const { code, payload } = await runDailyJob(c.io);
+    assert.equal(code, 0);
+    assert.equal(payload?.status, "posted");
+    assert.equal(payload?.record?.attempts, 1);
+    const onDisk = JSON.parse(await readFile(c.recordPath, "utf8"));
+    assert.equal(onDisk.status, "posted");
+    const fake = c.sessions[0];
+    assert.ok(fake);
+    assert.equal(fake.currentMessages().length, 1);
+    assert.equal(fake.state.disconnected, true);
   } finally {
     await c.cleanup();
   }

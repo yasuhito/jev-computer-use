@@ -13,7 +13,8 @@ import { loadSyntheticPage, buildElements } from "./fixtures/synthetic-slack.mjs
 
 const ROOT_ID = 1;
 const FIRST_ELEMENT_ID = 10;
-const TEXT_CHILD_OFFSET = 10_000;
+/** Offset between an element's backend node id and its StaticText child's id. */
+export const TEXT_CHILD_OFFSET = 10_000;
 
 /**
  * The AX representation the synthetic page reports for editor content: the
@@ -27,7 +28,7 @@ const TEXT_CHILD_OFFSET = 10_000;
 const slackParagraphs = (s) => (s === "\n" ? s : s.replace(/\n/g, "\n\n"));
 
 /**
- * @param {{origin?: string, startPath?: string, targetId?: string, viewport?: {width: number, height: number}, hitReturnsChild?: boolean, page?: import("./fixtures/synthetic-slack.mjs").SyntheticPage}} [options]
+ * @param {{origin?: string, startPath?: string, targetId?: string, viewport?: {width: number, height: number}, hitReturnsChild?: boolean, page?: import("./fixtures/synthetic-slack.mjs").SyntheticPage, splitMessages?: boolean}} [options]
  */
 export function createFakeCdp({
   origin = "https://app.slack.com",
@@ -36,6 +37,7 @@ export function createFakeCdp({
   viewport = { width: 1280, height: 4000 },
   hitReturnsChild = false,
   page = loadSyntheticPage(),
+  splitMessages = false,
 } = {}) {
   /** @type {Map<string, number>} */
   const idsByKey = new Map();
@@ -77,6 +79,10 @@ export function createFakeCdp({
     extraElements: [],
     /** @type {((draft: string) => string)|null} simulates a page that rewrites inserted text */
     transformDraft: null,
+    /** @type {((draft: string) => string)|null} simulates a page that renders the posted message differently from the drafted text */
+    transformPosted: null,
+    /** Render each posted message as one element per paragraph (the real client's message list), not one joined node. */
+    splitMessages,
     /**
      * Value a completed send leaves in the composer. Default ""; a page whose
      * cleared blank composer keeps the blank editor artifact reports a single
@@ -93,7 +99,12 @@ export function createFakeCdp({
 
   /** @returns {{elements: Array<Element & {id: number, index: number}>, title: string}} */
   const render = () => {
-    const built = buildElements(page, { path: state.path, draft: currentDraft(), messages: currentMessages() });
+    const built = buildElements(page, {
+      path: state.path,
+      draft: currentDraft(),
+      messages: currentMessages(),
+      splitMessages: state.splitMessages,
+    });
     const elements = [...built.elements, ...state.extraElements].map((e, index) => ({ ...e, id: idFor(e.key), index }));
     const title = state.titleSuffix ? `${built.title} ${state.titleSuffix}` : built.title;
     return { elements, title };
@@ -188,7 +199,8 @@ export function createFakeCdp({
       if (e.key === "send") {
         if (e.disabled || !state.posting) return;
         const draft = currentDraft();
-        state.messages.set(state.path, [...currentMessages(), draft]);
+        const posted = state.transformPosted ? state.transformPosted(draft) : draft;
+        state.messages.set(state.path, [...currentMessages(), posted]);
         state.drafts.set(state.path, state.clearedDraft);
         return;
       }

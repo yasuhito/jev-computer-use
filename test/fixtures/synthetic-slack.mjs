@@ -135,7 +135,7 @@ export function conversationPath(page, c) {
  * One element in document order. `key` is stable across renders.
  * @typedef {object} Element
  * @property {string} key
- * @property {"heading"|"link"|"treeitem"|"textbox"|"button"|"statictext"} role
+ * @property {"heading"|"link"|"treeitem"|"textbox"|"button"|"statictext"|"paragraph"} role
  * @property {string} name the accessible name the fake browser reports (empty for tree rows, as Chromium does)
  * @property {string|null} text the static text below the element, or null when it has none
  * @property {string|null} href where activating the element navigates (links and tree rows)
@@ -146,10 +146,10 @@ export function conversationPath(page, c) {
 
 /**
  * @param {SyntheticPage} page
- * @param {{path: string, draft: string, messages: string[]}} state
+ * @param {{path: string, draft: string, messages: string[], splitMessages?: boolean}} state
  * @returns {{conversation: Conversation|null, title: string, elements: Element[]}}
  */
-export function buildElements(page, { path, draft, messages }) {
+export function buildElements(page, { path, draft, messages, splitMessages = false }) {
   const { shape } = page;
   const conversation = conversationForPath(page, path);
   const title = conversation ? `${titleLabel(conversation, shape)} - ${page.title}` : page.title;
@@ -216,6 +216,17 @@ export function buildElements(page, { path, draft, messages }) {
     });
   }
   messages.forEach((text, i) => {
+    if (splitMessages) {
+      // The real client renders each paragraph of a posted message as its own
+      // element, so no single accessibility node carries the joined text;
+      // blank paragraphs render as elements without text, like the browser
+      // reading an empty block.
+      const lines = text.split("\n").filter((line) => line !== "");
+      lines.forEach((line, j) => {
+        elements.push({ key: `message:${i}:p${j}`, role: "statictext", name: line, text: line, href: null, value: null, disabled: false, attributes: {} });
+      });
+      return;
+    }
     elements.push({ key: `message:${i}`, role: "statictext", name: text, text, href: null, value: null, disabled: false, attributes: {} });
   });
   return { conversation, title, elements };

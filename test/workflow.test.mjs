@@ -345,7 +345,9 @@ test("send mode verifies the live reproduction end to end: multi-paragraph draft
   // comparison was exact while the page reads paragraph boundaries as blank
   // lines. All three now compare through the canonical paragraph-aware
   // equality, so the same flow verifies: the read-back, the send-time
-  // composer check, and the exact posted-message verification.
+  // composer check, and the posted-message verification (here in the joined
+  // single-node form the composer representation takes; the split
+  // message-list form is covered below).
   const env = setup();
   const text = [
     "QA2 new users (Live) for 2026-09-20 (UTC)",
@@ -402,6 +404,97 @@ test("send mode stops when no send control is selected", async () => {
   assert.equal(report.completed, "draft");
   assert.equal(env.fake.currentDraft(), TEXT);
   assert.deepEqual(env.fake.currentMessages(), []);
+});
+
+/* ------------- the 2026-09-21 split-paragraph post verification ------------- */
+
+/** The six-paragraph report the live qa2 job posts (six lines incl. a missing-days line). */
+const REPORT_TEXT = [
+  "QA2 new users (Live) for 2026-09-20 (UTC)",
+  "New users on 2026-09-20: 1,234",
+  "vs 2026-09-19 (1,100): +134 (+12.2%), trend: up",
+  "vs trailing 7-day avg 09-14..09-20 (1,071): +163 (+15.2%), trend: up",
+  "Last 7 days (UTC): 09-14 900 | 09-15 1,000 | 09-16 1,100 | 09-17 1,000 | 09-18 1,200 | 09-19 1,100 | 09-20 1,234",
+  "Days with no rows (counted as 0): 09-13",
+  "Source: Unity Analytics Data Access (Snowflake) | key: unity-new-users:24601:31001:2026-09-20",
+].join("\n");
+
+test("send mode verifies the 2026-09-21 reproduction: the posted message renders as six separate paragraph nodes", async () => {
+  // The 2026-09-21 live qa2 run: the send landed (the immediate rerun was
+  // refused with duplicate_post), but Slack renders the six paragraphs of the
+  // posted report as six separate accessibility nodes, so no single node
+  // carried the exact full text and the post verification failed. The run
+  // stayed unverified and no success record was written for 2026-09-21.
+  // The verification must read the paragraphs across the split nodes under
+  // the same strict paragraph-aware semantics as the composer read-back.
+  const env = setup({ splitMessages: true });
+  const report = await run(env, { mode: "send", text: REPORT_TEXT });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
+  assert.deepEqual(env.fake.currentMessages(), [REPORT_TEXT], "the posted content is the exact requested text");
+  assert.equal(env.fake.currentDraft(), "");
+  const posted = /** @type {{verified: boolean, url: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.ok(posted);
+  assert.equal(posted.verified, true);
+  assert.equal(posted.url, QA2);
+});
+
+test("after a split-paragraph send that failed to verify, a rerun still refuses at the duplicate marker", async () => {
+  // The incident's signature: the post landed, so the rerun must refuse at
+  // the duplicate marker (the marker line sits inside one paragraph node),
+  // even though the previous attempt could not verify its own send.
+  const env = setup({ splitMessages: true });
+  const first = await run(env, { mode: "send", text: REPORT_TEXT, duplicateMarker: "unity-new-users:24601:31001:2026-09-20" });
+  assert.equal(first.status, "executed");
+  const again = await run(env, { mode: "send", text: REPORT_TEXT, duplicateMarker: "unity-new-users:24601:31001:2026-09-20" });
+  assert.equal(again.status, "refused");
+  assert.equal(again.refusal?.code, "duplicate_post");
+  assert.deepEqual(env.fake.currentMessages(), [REPORT_TEXT], "nothing is posted twice");
+  assert.equal(env.fake.clicks().length, 4, "the first send's three clicks plus the rerun's destination click");
+});
+
+test("send mode verifies split paragraphs only for the exact sequence: missing, reordered, altered, or extra non-empty paragraphs stay unverified", async () => {
+  // The composer held the exact requested text and the send ran, but the
+  // page rendered a different paragraph sequence; only the exact sequence
+  // verifies, so every deviation reports unverified and no record would be
+  // written.
+  const cases = /** @type {const} */ ([
+    ["a paragraph is missing", (/** @type {string} */ t) => t.replace("Days with no rows (counted as 0): 09-13\n", "")],
+    [
+      "paragraphs are reordered",
+      (/** @type {string} */ t) => {
+        const lines = t.split("\n");
+        return lines.map((line, index) => (index === 1 ? (lines[2] ?? "") : index === 2 ? (lines[1] ?? "") : line)).join("\n");
+      },
+    ],
+    ["a paragraph is altered", (/** @type {string} */ t) => t.replace("1,234", "1,235")],
+    ["an extra non-empty paragraph is inserted", (/** @type {string} */ t) => t.replace("vs 2026-09-19", "unrelated note\nvs 2026-09-19")],
+  ]);
+  for (const [name, transform] of cases) {
+    const env = setup({ splitMessages: true });
+    env.fake.state.transformPosted = transform;
+    const report = await run(env, { mode: "send", text: REPORT_TEXT });
+    assert.equal(report.status, "unverified", name);
+    assert.equal(report.completed, "send", name);
+    const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+    assert.ok(posted, name);
+    assert.equal(posted.verified, false, name);
+    assert.notDeepEqual(env.fake.currentMessages(), [REPORT_TEXT], name);
+  }
+});
+
+test("send mode on the real-shaped page verifies split paragraph nodes and refuses the duplicate rerun", async () => {
+  const env = setup({ ...treeShape(), splitMessages: true });
+  const marker = "unity-new-users:24601:31001:2026-09-20";
+  const report = await run(env, { mode: "send", destination: "qa2", text: REPORT_TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: marker });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
+  assert.deepEqual(env.fake.currentMessages(), [REPORT_TEXT]);
+  assert.equal(env.fake.currentUrl(), TREE_QA2);
+  // The rerun reads the marker inside one of the split paragraph nodes.
+  const again = await run(env, { mode: "send", destination: "qa2", text: REPORT_TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: marker });
+  assert.equal(again.status, "refused");
+  assert.equal(again.refusal?.code, "duplicate_post");
 });
 
 /* ----------------------------- validation ----------------------------- */
