@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CdpAdapter, ALLOWED_CDP_METHODS, MAX_ATTRIBUTE_LOOKUPS, urlReached, digestCandidates, editorValueIsEmpty } from "../src/cdp/adapter.mjs";
+import { CdpAdapter, ALLOWED_CDP_METHODS, MAX_ATTRIBUTE_LOOKUPS, urlReached, digestCandidates, editorValueIsEmpty, paragraphEqual } from "../src/cdp/adapter.mjs";
 import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
 import { RefusalError, TransportError, CdpProtocolError } from "../src/errors.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
@@ -291,7 +291,9 @@ test("insertText focuses with one click, inserts the exact text, and verifies th
   const report = await adapter.insertText(snapshot, composer.id, "users today: 1234\nchange: +5%");
   assert.equal(report.action, "insertText");
   assert.equal(report.verified, true);
-  assert.equal(report.readBack, "users today: 1234\nchange: +5%");
+  // The synthetic page models the real editor: each paragraph boundary reads
+  // back as a blank line, while the stored draft stays the exact text.
+  assert.equal(report.readBack, "users today: 1234\n\nchange: +5%");
   assert.equal(fake.currentDraft(), "users today: 1234\nchange: +5%");
   assert.equal(fake.clicks().length, 1);
   assert.deepEqual(fake.methodCalls("Input.insertText").map((c) => c.params.text), ["users today: 1234\nchange: +5%"]);
@@ -335,7 +337,7 @@ test("insertText accepts the exact blank-editor newline artifact", async () => {
   assert.equal(find(snapshot, /Send now/).disabled, true, "the blank draft leaves send disabled");
   const report = await adapter.insertText(snapshot, composer.id, "users today: 1234\nchange: +5%");
   assert.equal(report.verified, true);
-  assert.equal(report.readBack, "users today: 1234\nchange: +5%");
+  assert.equal(report.readBack, "users today: 1234\n\nchange: +5%");
   assert.equal(fake.currentDraft(), "users today: 1234\nchange: +5%");
   assert.deepEqual(fake.methodCalls("Input.insertText").map((c) => c.params.text), ["users today: 1234\nchange: +5%"]);
 });
@@ -363,6 +365,46 @@ test("editor emptiness accepts only absent, empty, and exact single-newline valu
   }
 });
 
+test("paragraphEqual compares non-empty lines exactly and in order, tolerating only blank-line differences", () => {
+  assert.equal(paragraphEqual("p1\np2", "p1\n\np2"), true, "a paragraph boundary may read back as a blank line");
+  assert.equal(paragraphEqual("p1", "p1"), true, "single-line messages are exact");
+  assert.equal(paragraphEqual("p1\np2", "p1\np2\n\n"), true, "trailing blank lines are not significant");
+  assert.equal(paragraphEqual("\n\np1\np2", "p1\np2"), true, "leading blank lines are not significant");
+  assert.equal(paragraphEqual("p1\n\np2", "p1\n\n\n\np2"), true, "any number of blank lines is not significant");
+  assert.equal(paragraphEqual("", "\n\n"), true, "two reads with no non-empty lines equal");
+  assert.equal(paragraphEqual(null, "p1"), false);
+  assert.equal(paragraphEqual("p1", undefined), false);
+  assert.equal(paragraphEqual("p1", "p1 "), false, "a trailing space differs");
+  assert.equal(paragraphEqual("p1", " p1"), false, "a leading space differs");
+  assert.equal(paragraphEqual("a b", "a  b"), false, "extra spaces differ");
+  assert.equal(paragraphEqual("a\tb", "a b"), false, "tab and space differ");
+  assert.equal(paragraphEqual("a\u00A0b", "a b"), false, "NBSP differs");
+  assert.equal(paragraphEqual("\uFEFFp1", "p1"), false, "BOM differs");
+  assert.equal(paragraphEqual("p1\n \np2", "p1\np2"), false, "a whitespace-only line is non-empty content");
+  assert.equal(paragraphEqual("p1\np2", "p1\np3"), false, "a changed non-empty line refuses");
+  assert.equal(paragraphEqual("p1\np2", "p1\np2\np3"), false, "an added non-empty line refuses");
+  assert.equal(paragraphEqual("p1\np2", "p2"), false, "a removed non-empty line refuses");
+  assert.equal(paragraphEqual("p1\np2", "p2\np1"), false, "reordered lines refuse");
+});
+
+test("insertText verifies the live reproduction: a multi-paragraph draft reads back with blank-line joins", async () => {
+  // The 2026-09 live qa2 attempt: the six-paragraph report was inserted
+  // correctly, but the page read every paragraph boundary back as a blank
+  // line (requested "p1\np2\n...\np6", 362 characters; read-back
+  // "p1\n\np2\n\n...", 367 characters), so the exact read-back refused and
+  // nothing was posted. The synthetic page models that representation, and
+  // the canonical paragraph-aware read-back verifies it.
+  const { fake, adapter } = setup();
+  const snapshot = await adapter.observe();
+  const composer = find(snapshot, /Message #general/);
+  const text = "p1\np2\np3\np4\np5\np6";
+  const report = await adapter.insertText(snapshot, composer.id, text);
+  assert.equal(report.verified, true);
+  assert.equal(report.readBack, "p1\n\np2\n\np3\n\np4\n\np5\n\np6");
+  assert.equal(fake.currentDraft(), text, "the stored draft is still the exact requested text");
+  assert.deepEqual(fake.methodCalls("Input.insertText").map((c) => c.params.text), [text]);
+});
+
 test("insertText still refuses any editor value holding a non-whitespace character", async () => {
   for (const draft of ["x", "\nx", "x\n", "\n x \n", "\u00A0x", "\t\tx", "\nhello\n", " \u3000x", "x\u00A0"]) {
     const { fake, adapter } = setup();
@@ -376,19 +418,31 @@ test("insertText still refuses any editor value holding a non-whitespace charact
   }
 });
 
-test("insertText read-back stays exact even when the difference is whitespace only", async () => {
-  // The emptiness classification never loosens the exact read-back equality:
-  // a page that rewrites the draft by even one newline still refuses.
-  const { fake, adapter } = setup();
-  fake.state.transformDraft = (draft) => `${draft}\n`;
-  const snapshot = await adapter.observe();
-  const composer = find(snapshot, /Message #general/);
-  await assert.rejects(adapter.insertText(snapshot, composer.id, "exact"), (/** @type {unknown} */ err) => {
-    assert.ok(err instanceof RefusalError);
-    assert.equal(err.code, "text_mismatch");
-    assert.equal(err.details.readBack, "exact\n");
-    return true;
-  });
+test("insertText tolerates paragraph-boundary artifacts in the read-back and refuses within-line differences", async () => {
+  // The paragraph-aware read-back tolerates exactly the blank-line artifact
+  // class a per-paragraph editor produces; anything differing within a line
+  // still refuses.
+  {
+    const { fake, adapter } = setup();
+    fake.state.transformDraft = (draft) => `${draft}\n`;
+    const snapshot = await adapter.observe();
+    const composer = find(snapshot, /Message #general/);
+    const report = await adapter.insertText(snapshot, composer.id, "exact");
+    assert.equal(report.verified, true);
+    assert.equal(report.readBack, "exact\n\n", "the trailing paragraph boundary reads back as a blank line");
+  }
+  {
+    const { fake, adapter } = setup();
+    fake.state.transformDraft = (draft) => `${draft} `;
+    const snapshot = await adapter.observe();
+    const composer = find(snapshot, /Message #general/);
+    await assert.rejects(adapter.insertText(snapshot, composer.id, "exact"), (/** @type {unknown} */ err) => {
+      assert.ok(err instanceof RefusalError);
+      assert.equal(err.code, "text_mismatch");
+      assert.equal(err.details.readBack, "exact ");
+      return true;
+    });
+  }
 });
 
 /* ----------------------------- findText / waitFor ----------------------------- */
@@ -397,7 +451,11 @@ test("findText and waitFor observe posted messages without acting", async () => 
   const { fake, clock, adapter } = setup();
   assert.equal((await adapter.findText("users today: 1")).count, 0);
   fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["users today: 1"]);
-  assert.equal((await adapter.findText("users   today: 1")).count, 1);
+  assert.equal((await adapter.findText("users today: 1")).count, 1);
+  // Exact is exact within a line: whitespace is never normalized; only
+  // blank-line paragraph-boundary differences are tolerated.
+  assert.equal((await adapter.findText("users   today: 1")).count, 0);
+  assert.equal((await adapter.findText("users today: 1 ")).count, 0);
   const hit = await adapter.waitFor((s) => s.candidates.length > 0);
   assert.equal(hit.ok, true);
   const before = clock.now();
@@ -405,6 +463,20 @@ test("findText and waitFor observe posted messages without acting", async () => 
   assert.equal(miss.ok, false);
   assert.ok(clock.now() - before >= 300);
   assert.equal(fake.methodCalls("Input.dispatchMouseEvent").length, 0);
+});
+
+test("findText exact verifies a multi-paragraph message across blank-line joins and rejects any non-empty difference", async () => {
+  const { fake, adapter } = setup();
+  // A posted two-paragraph message reads back with the paragraph boundary as
+  // a blank line, the representation the real page reports.
+  fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["users today: 1\nchange: +5%"]);
+  assert.equal((await adapter.findText("users today: 1\nchange: +5%")).count, 1);
+  assert.equal((await adapter.findText("users today: 1\n\nchange: +5%")).count, 1, "blank lines are not significant");
+  assert.equal((await adapter.findText("users today: 1\nchange: -5%")).count, 0, "a changed non-empty line refuses");
+  assert.equal((await adapter.findText("users today: 1")).count, 0, "a removed non-empty line refuses");
+  assert.equal((await adapter.findText("users today: 1\nextra\nchange: +5%")).count, 0, "an added non-empty line refuses");
+  assert.equal((await adapter.findText("change: +5%\nusers today: 1")).count, 0, "reordered lines refuse");
+  assert.equal((await adapter.findText("users today: 1\nchange: +5%", { match: "contains" })).count, 1, "containment keeps matching the joined name");
 });
 
 test("urlReached compares normalized URLs and accepts sub-paths only at a boundary", () => {

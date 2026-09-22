@@ -264,6 +264,39 @@ test("draft mode refuses when the read-back differs from the exact text", async 
   assert.deepEqual(env.fake.currentMessages(), []);
 });
 
+test("draft mode verifies the live reproduction: a multi-paragraph text whose paragraphs read back as blank lines", async () => {
+  // The 2026-09 qa2 live attempt: the six-paragraph report was inserted
+  // correctly, but the page read every paragraph boundary back as a blank
+  // line (362 characters requested, 367 read back), so the exact read-back
+  // refused and nothing was posted. The canonical paragraph-aware comparison
+  // verifies exactly that representation.
+  const env = setup();
+  const text = [
+    "QA2 new users (Live) for 2026-09-20 (UTC)",
+    "New users on 2026-09-20: 1,234",
+    "vs 2026-09-19 (1,100): +134 (+12.2%), trend: up",
+    "Last 7 days (UTC): 09-14 900 | 09-15 1,000 | 09-16 1,100",
+    "Source: Unity Analytics Data Access (Snowflake) | key: unity-new-users:24601:31001:2026-09-20",
+  ].join("\n");
+  const report = await run(env, { mode: "draft", text });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "draft");
+  assert.equal(env.fake.currentDraft(), text, "the draft itself is the exact requested text");
+  const draft = /** @type {{readBack: string, verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
+  assert.ok(draft);
+  assert.equal(draft.verified, true);
+  assert.equal(draft.readBack, text.replace(/\n/g, "\n\n"), "the page reads every paragraph boundary as a blank line");
+});
+
+test("draft mode refuses a multi-paragraph text when any non-empty line differs", async () => {
+  const env = setup();
+  env.fake.state.transformDraft = (d) => d.replace("1,234", "1,234 or more");
+  const report = await run(env, { mode: "draft", text: "p1\nNew users on 2026-09-20: 1,234\np3" });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "text_mismatch");
+  assert.deepEqual(env.fake.currentMessages(), []);
+});
+
 /* ----------------------------- send ----------------------------- */
 
 test("send mode drafts, clicks send once, and verifies the message was posted", async () => {
@@ -305,6 +338,34 @@ test("send mode verifies the post even when the cleared composer keeps the blank
   assert.ok(posted);
   assert.equal(posted.verified, true);
   assert.equal(env.fake.currentDraft(), "\n");
+});
+
+test("send mode verifies the live reproduction end to end: multi-paragraph draft, composer check, and posted verification", async () => {
+  // The 2026-09 qa2 live attempt refused before Send because every safety
+  // comparison was exact while the page reads paragraph boundaries as blank
+  // lines. All three now compare through the canonical paragraph-aware
+  // equality, so the same flow verifies: the read-back, the send-time
+  // composer check, and the exact posted-message verification.
+  const env = setup();
+  const text = [
+    "QA2 new users (Live) for 2026-09-20 (UTC)",
+    "New users on 2026-09-20: 1,234",
+    "vs 2026-09-19 (1,100): +134 (+12.2%), trend: up",
+    "Last 7 days (UTC): 09-14 900 | 09-15 1,000 | 09-16 1,100",
+    "Source: Unity Analytics Data Access (Snowflake) | key: unity-new-users:24601:31001:2026-09-20",
+  ].join("\n");
+  const report = await run(env, { mode: "send", text });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
+  const draft = /** @type {{readBack: string, verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
+  assert.ok(draft);
+  assert.equal(draft.verified, true);
+  assert.equal(draft.readBack, text.replace(/\n/g, "\n\n"), "the page reads every paragraph boundary as a blank line");
+  assert.deepEqual(env.fake.currentMessages(), [text], "the posted content is the requested text");
+  assert.equal(env.fake.currentDraft(), "");
+  const posted = /** @type {{verified: boolean, url: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.ok(posted);
+  assert.equal(posted.verified, true);
 });
 
 test("send mode refuses when the draft changed between typing and sending", async () => {

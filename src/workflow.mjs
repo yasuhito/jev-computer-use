@@ -18,7 +18,7 @@ import { validateRequest, ValidationError, isPlainObject } from "./validate.mjs"
 import { buildRequest, runDecision } from "./decide.mjs";
 import { applyPolicy } from "./policy.mjs";
 import { RefusalError } from "./errors.mjs";
-import { urlReached, editorValueIsEmpty } from "./cdp/adapter.mjs";
+import { urlReached, editorValueIsEmpty, paragraphEqual } from "./cdp/adapter.mjs";
 
 /** @typedef {import("./cdp/adapter.mjs").CdpAdapter} CdpAdapter */
 /** @typedef {import("./cdp/adapter.mjs").Snapshot} Snapshot */
@@ -188,6 +188,12 @@ function atDestination(snapshot, destinationUrl) {
 }
 
 /**
+ * The send-time composer check compares through the same canonical
+ * paragraph-aware equality as the insertText read-back (see paragraphEqual
+ * in CdpAdapter): the page's accessibility tree may read every paragraph
+ * boundary as a blank line, so only blank-line differences are tolerated
+ * and every non-empty line must match exactly and in order.
+ *
  * @param {Snapshot} snapshot
  * @param {number} composerBackendNodeId
  * @param {string} text
@@ -196,8 +202,8 @@ function atDestination(snapshot, destinationUrl) {
 function composerHolds(snapshot, composerBackendNodeId, text) {
   const composer = snapshot.candidates.find((c) => c.backendNodeId === composerBackendNodeId);
   if (!composer) return { ok: false, code: "text_mismatch", reason: "the composer is no longer observable" };
-  if (composer.value !== text) {
-    return { ok: false, code: "text_mismatch", reason: "the composer no longer holds the exact caller text" };
+  if (!paragraphEqual(composer.value, text)) {
+    return { ok: false, code: "text_mismatch", reason: "the composer no longer holds the caller text" };
   }
   return { ok: true };
 }

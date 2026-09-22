@@ -226,6 +226,34 @@ export function editorValueIsEmpty(value) {
 }
 
 /**
+ * The canonical paragraph-aware text equality for every safety comparison
+ * against page-read text: the insertText read-back, the send-time composer
+ * check, and the exact findText post-verification all compare through this
+ * one helper.
+ *
+ * A rich-text editor lays each paragraph out as its own block, and the
+ * browser's accessibility tree reads every block boundary as a blank line,
+ * so text typed as "p1\np2" reads back as "p1\n\np2". Both strings are
+ * therefore split on LF (U+000A), only the empty segments are dropped, and
+ * every remaining line must match exactly and in order. Nothing else is
+ * normalized: spaces, tabs, NBSP, BOM, non-empty text, line order, and the
+ * count of non-empty lines all matter. A null or undefined read never
+ * equals.
+ *
+ * @param {string|null|undefined} actual
+ * @param {string|null|undefined} expected
+ * @returns {boolean}
+ */
+export function paragraphEqual(actual, expected) {
+  if (typeof actual !== "string" || typeof expected !== "string") return false;
+  /** @param {string} s */
+  const lines = (s) => s.split("\n").filter((line) => line !== "");
+  const actualLines = lines(actual);
+  const expectedLines = lines(expected);
+  return actualLines.length === expectedLines.length && actualLines.every((line, index) => line === expectedLines[index]);
+}
+
+/**
  * @param {string} actual
  * @param {string} expected
  * @returns {boolean}
@@ -581,9 +609,12 @@ export class CdpAdapter {
   /**
    * Focus a decided editable candidate with one click and insert exact text,
    * then read the value back from the accessibility tree and require it to
-   * equal the text. The editable must be empty beforehand: an absent value,
-   * an empty string, or Chromium's exact single-U+000A blank-editor artifact
-   * counts as empty; every other value refuses.
+   * equal the text under the canonical paragraph-aware comparison
+   * (paragraphEqual): only blank-line paragraph-boundary differences are
+   * tolerated, and every non-empty line must match exactly and in order.
+   * The editable must be empty beforehand: an absent value, an empty string,
+   * or Chromium's exact single-U+000A blank-editor artifact counts as empty;
+   * every other value refuses.
    *
    * @param {Snapshot} snapshot
    * @param {string} candidateId
@@ -612,7 +643,7 @@ export class CdpAdapter {
       const after = await this.observe();
       const current = after.candidates.find((c) => c.backendNodeId === candidate.backendNodeId);
       readBack = current ? current.value : null;
-      if (readBack === text) break;
+      if (paragraphEqual(readBack, text)) break;
       if (this.#now() - started >= this.#settleMs) {
         throw new RefusalError("text_mismatch", `${candidate.label} reads back differently from the requested text`, {
           readBack,
@@ -633,10 +664,15 @@ export class CdpAdapter {
   }
 
   /**
-   * Count accessibility nodes whose whitespace-collapsed name equals the
-   * text (default) or contains it (`match: "contains"`). Read-only; used to
-   * verify that a message appeared on the page and to detect that content
-   * carrying a caller's marker is already present.
+   * Count accessibility nodes matching the text. `exact` (the default)
+   * compares the raw accessible name against the raw text through the
+   * canonical paragraph-aware equality (paragraphEqual): only blank-line
+   * paragraph-boundary differences are tolerated, and every non-empty line
+   * must match exactly and in order. `contains` keeps its containment
+   * semantics: it compares the whitespace-collapsed name against the
+   * whitespace-collapsed text and is what the duplicate-marker guard uses.
+   * Read-only; used to verify that a message appeared on the page and to
+   * detect that content carrying a caller's marker is already present.
    *
    * @param {string} text
    * @param {{match?: "exact"|"contains"}} [options]
@@ -652,8 +688,11 @@ export class CdpAdapter {
     for (const raw of Array.isArray(nodes) ? nodes : []) {
       const node = reduceAxNode(raw, "");
       if (!node) continue;
-      const name = typeof raw?.name?.value === "string" ? sanitizeLabel(raw.name.value, MAX_VALUE_LENGTH) : "";
-      const hit = match === "contains" ? name.includes(wanted) : name === wanted;
+      const name = typeof raw?.name?.value === "string" ? raw.name.value : null;
+      const hit =
+        match === "contains"
+          ? name !== null && sanitizeLabel(name, MAX_VALUE_LENGTH).includes(wanted)
+          : paragraphEqual(name, text);
       if (hit) backendNodeIds.push(node.backendNodeId);
     }
     return { count: backendNodeIds.length, backendNodeIds };
