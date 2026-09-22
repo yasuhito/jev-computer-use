@@ -66,6 +66,12 @@ export function createFakeCdp({
     extraElements: [],
     /** @type {((draft: string) => string)|null} simulates a page that rewrites inserted text */
     transformDraft: null,
+    /**
+     * Value a completed send leaves in the composer. Default ""; a page whose
+     * cleared blank composer keeps the blank editor artifact reports a
+     * whitespace-only value (Chromium: a single U+000A) instead.
+     */
+    clearedDraft: "",
   };
 
   /** @type {Array<{method: string, params: Record<string, unknown>}>} */
@@ -172,7 +178,7 @@ export function createFakeCdp({
         if (e.disabled || !state.posting) return;
         const draft = currentDraft();
         state.messages.set(state.path, [...currentMessages(), draft]);
-        state.drafts.set(state.path, "");
+        state.drafts.set(state.path, state.clearedDraft);
         return;
       }
       state.sideEffects.push(e.name);
@@ -252,7 +258,13 @@ export function createFakeCdp({
         const focused = state.focused === null ? null : elementById(state.focused);
         if (focused && focused.role === "textbox") {
           if (focused.key === "composer") {
-            const next = currentDraft() + String(params.text);
+            const previous = currentDraft();
+            // A blank rich-text editor's accessibility value is a
+            // whitespace-only artifact (Chromium: a single U+000A), not
+            // document content; inserted text replaces it, the way the real
+            // page does, so the read-back is exactly the inserted text.
+            const next =
+              previous.trim() === "" ? String(params.text) : previous + String(params.text);
             state.drafts.set(state.path, state.transformDraft ? state.transformDraft(next) : next);
           } else {
             state.sideEffects.push(`insertText into ${focused.name}`);

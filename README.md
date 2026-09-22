@@ -223,13 +223,19 @@ profile already recognized, followed by deterministic validation in code.
   the snapshot is younger than 20 s, the element is enabled with a box inside
   the viewport, and a hit test at the click point resolves to that element.
   Before typing it additionally requires the page to be at the selected
-  destination and the composer to be empty; before sending, the page must still
-  be at the destination and the composer must still hold the exact text.
+  destination and the composer to be empty (a value holding only whitespace
+  counts as empty: Chromium reports a visually empty contenteditable composer
+  as a single newline, U+000A, so an exact "" comparison would misread the
+  blank composer as a draft; any non-whitespace character refuses); before
+  sending, the page must still be at the destination and the composer must
+  still hold the exact text.
 - **Exact text, read back.** The text is inserted with `Input.insertText`
   (never key events) and read back from the accessibility tree; any difference
-  is `text_mismatch`. After sending, the workflow waits for the composer to be
-  empty and the exact text to appear on the page; otherwise the status is
-  `unverified`.
+  is `text_mismatch`, and the comparison is exact and untrimmed. Composer
+  emptiness is classified by content, as above: only whitespace is empty, any
+  non-whitespace character is a draft. After sending, the workflow waits for
+  the composer to be empty again (same classification) and the exact text to
+  appear on the page; otherwise the status is `unverified`.
 - **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
   unless the requested name is exactly the leading name of the chosen
@@ -324,7 +330,7 @@ point, URLs, and read-back), the post verification, and in dry-run a `plan`.
 | `stale_snapshot` / `stale_target` | the decision is older than 20 s, or the session's target changed |
 | `changed_state` | URL, candidate set, or the selected element changed before acting |
 | `not_actionable` | the element is disabled or has no clickable box in the viewport |
-| `text_mismatch` | the composer was not empty, or the read-back differs from the exact text |
+| `text_mismatch` | the composer holds non-whitespace text, or the read-back differs from the exact text |
 | `destination_mismatch` | the page is not at the selected destination, or (with `exactDestination`) the chosen link does not name the requested destination exactly |
 | `duplicate_post` | (with `duplicateMarker`) the destination already shows content carrying the marker |
 

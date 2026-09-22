@@ -243,6 +243,18 @@ test("draft mode refuses a composer that already holds a draft", async () => {
   assert.equal(env.fake.currentDraft(), "leftover");
 });
 
+test("draft mode accepts a composer whose only draft is the blank editor newline", async () => {
+  // The Beelink reproduction: the qa2 composer is visually empty and its
+  // send control is disabled, but the accessibility value is a single
+  // U+000A newline; that whitespace-only artifact is empty, not a draft.
+  const env = setup();
+  env.fake.state.drafts.set("/client/T0SYNTH/C0QA2METRICS", "\n");
+  const report = await run(env, { mode: "draft", text: TEXT });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "draft");
+  assert.equal(env.fake.currentDraft(), TEXT);
+});
+
 test("draft mode refuses when the read-back differs from the exact text", async () => {
   const env = setup();
   env.fake.state.transformDraft = (d) => `${d} (edited by page)`;
@@ -278,6 +290,21 @@ test("send mode reports unverified when the page swallows the send", async () =>
   assert.equal(report.status, "unverified");
   assert.equal(report.completed, "send");
   assert.equal(env.fake.clicks().length, 3);
+});
+
+test("send mode verifies the post even when the cleared composer keeps the blank newline artifact", async () => {
+  // A page whose cleared blank composer keeps the whitespace-only artifact
+  // (Chromium: U+000A) counts as empty, so the post is still verified.
+  const env = setup();
+  env.fake.state.clearedDraft = "\n";
+  const report = await run(env, { mode: "send", text: TEXT });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
+  assert.deepEqual(env.fake.currentMessages(), [TEXT]);
+  const posted = /** @type {{verified: boolean, url: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.ok(posted);
+  assert.equal(posted.verified, true);
+  assert.equal(env.fake.currentDraft(), "\n");
 });
 
 test("send mode refuses when the draft changed between typing and sending", async () => {

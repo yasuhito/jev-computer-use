@@ -18,7 +18,7 @@ import { validateRequest, ValidationError, isPlainObject } from "./validate.mjs"
 import { buildRequest, runDecision } from "./decide.mjs";
 import { applyPolicy } from "./policy.mjs";
 import { RefusalError } from "./errors.mjs";
-import { urlReached } from "./cdp/adapter.mjs";
+import { urlReached, editorValueIsEmpty } from "./cdp/adapter.mjs";
 
 /** @typedef {import("./cdp/adapter.mjs").CdpAdapter} CdpAdapter */
 /** @typedef {import("./cdp/adapter.mjs").Snapshot} Snapshot */
@@ -457,7 +457,10 @@ export async function runWorkflow({
     const posted = await adapter.waitFor(async (snapshot) => {
       if (!urlReached(snapshot.target.url, destinationUrl)) return false;
       const composerNow = snapshot.candidates.find((c) => c.backendNodeId === composer.backendNodeId);
-      if (!composerNow || (composerNow.value ?? "") !== "") return false;
+      // The same emptiness classification as insertText's precheck: a page
+      // whose cleared composer keeps the blank editor artifact (a
+      // whitespace-only value) counts as empty; non-whitespace is a draft.
+      if (!composerNow || !editorValueIsEmpty(composerNow.value)) return false;
       const found = await adapter.findText(text);
       return found.count > 0;
     });

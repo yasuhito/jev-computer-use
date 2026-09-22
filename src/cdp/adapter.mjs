@@ -210,6 +210,23 @@ function normalizeUrl(url) {
 }
 
 /**
+ * Composer/editor emptiness classification. A visually empty rich-text
+ * editor does not always report an exact "": Chromium reports the
+ * accessibility value of a blank contenteditable as a single newline
+ * (U+000A), so an exact "" comparison would read the blank editor as an
+ * existing draft. A value is empty when it is absent or holds only
+ * whitespace; any non-whitespace character is text. This classifies the
+ * observed value only - the text an action inserts is never normalized or
+ * trimmed by it.
+ *
+ * @param {string|null|undefined} value
+ * @returns {boolean}
+ */
+export function editorValueIsEmpty(value) {
+  return (value ?? "").trim() === "";
+}
+
+/**
  * @param {string} actual
  * @param {string} expected
  * @returns {boolean}
@@ -565,7 +582,10 @@ export class CdpAdapter {
   /**
    * Focus a decided editable candidate with one click and insert exact text,
    * then read the value back from the accessibility tree and require it to
-   * equal the text. The editable must be empty beforehand.
+   * equal the text. The editable must be empty beforehand: an absent or
+   * whitespace-only value counts as empty (Chromium reports a visually
+   * empty contenteditable as a single U+000A), any non-whitespace character
+   * refuses.
    *
    * @param {Snapshot} snapshot
    * @param {string} candidateId
@@ -579,7 +599,7 @@ export class CdpAdapter {
     if (!focusAllowed.ok) {
       throw new RefusalError("unsupported_action", focusAllowed.reason ?? "focus click not allowed");
     }
-    if ((candidate.value ?? "") !== "") {
+    if (!editorValueIsEmpty(candidate.value)) {
       throw new RefusalError("text_mismatch", `${candidate.label} already contains text; refusing to append`, {
         readBack: candidate.value,
       });
