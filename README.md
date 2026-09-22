@@ -237,14 +237,13 @@ profile already recognized, followed by deterministic validation in code.
   remaining line must match exactly and in order. Only blank-line differences
   are tolerated, because a rich-text editor renders each paragraph as its own
   block and the browser's accessibility tree reads every block boundary as a
-  blank line: the first live qa2 post attempt was refused exactly there, with
-  a 362-character six-paragraph text requested and 367 characters read back.
+  blank line.
   Spaces, tabs, NBSP, BOM, non-empty text, line order, and the count of
   non-empty lines are never normalized. Composer emptiness still uses only
   the three representations above, and the duplicate-marker containment check
   is unchanged. After sending, the workflow waits for the composer to be
-  empty again (same classification) and the exact text to appear on the page;
-  otherwise the status is `unverified`.
+  empty again (same classification) and the text to appear on the page under
+  the same paragraph-aware comparison; otherwise the status is `unverified`.
 - **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
   unless the requested name is exactly the leading name of the chosen

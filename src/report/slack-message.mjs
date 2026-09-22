@@ -1,7 +1,7 @@
 /**
  * Deterministic Slack message text for a NewUsersReport. Plain text (no
  * mrkdwn markup, no mentions, no links), so what is inserted into the
- * composer is exactly what the read-back and post verification compare.
+ * composer is what the paragraph-aware read-back and post verification compare.
  * The idempotency key is part of the text so duplicate defenses can recognize
  * the post. Same report in, same string out; formatting has no locale input.
  */

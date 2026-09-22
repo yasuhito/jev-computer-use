@@ -54,7 +54,8 @@ import { parseUrl } from "../profiles/profile.mjs";
 /**
  * A caller-supplied check evaluated on the fresh re-observation inside the
  * execution gate, so workflow-level facts (the page is still at the chosen
- * destination, the composer still holds the exact text) are revalidated
+ * destination, the composer still holds the text under the canonical
+ * paragraph-aware comparison) are revalidated
  * immediately before dispatch. Returning a refusal aborts the action.
  * @typedef {(fresh: Snapshot) => {ok: true} | {ok: false, code: import("../errors.mjs").RefusalCode, reason: string}} Precondition
  */
@@ -688,9 +689,10 @@ export class CdpAdapter {
         .filter((node) => typeof node?.nodeId === "string")
         .map((node) => [node.nodeId, node]),
     );
+    /** @param {Record<string, any>} raw */
     const paragraphText = (raw) => {
       if (!Array.isArray(raw?.childIds)) return null;
-      const paragraphs = raw.childIds
+      const paragraphs = /** @type {string[]} */ (raw.childIds)
         .map((id) => byId.get(id))
         .filter((child) => child?.role?.value?.toLowerCase() === "paragraph")
         .map((child) => (typeof child?.name?.value === "string" ? child.name.value : null));
