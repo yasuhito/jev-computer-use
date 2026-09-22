@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CdpAdapter, ALLOWED_CDP_METHODS, MAX_ATTRIBUTE_LOOKUPS, urlReached, digestCandidates } from "../src/cdp/adapter.mjs";
+import { CdpAdapter, ALLOWED_CDP_METHODS, MAX_ATTRIBUTE_LOOKUPS, urlReached, digestCandidates, editorValueIsEmpty } from "../src/cdp/adapter.mjs";
 import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
 import { RefusalError, TransportError, CdpProtocolError } from "../src/errors.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
@@ -322,6 +322,73 @@ test("insertText refuses a composer that already holds text and a read-back that
       return true;
     });
   }
+});
+
+test("insertText accepts the exact blank-editor newline artifact", async () => {
+  // The Beelink reproduction: a visually empty composer (no text, the send
+  // control disabled) whose accessibility value is a single U+000A newline,
+  // so an exact "" precheck misread the blank composer as an existing draft.
+  const { fake, adapter } = setup();
+  fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", "\n");
+  const snapshot = await adapter.observe();
+  const composer = find(snapshot, /Message #general/);
+  assert.equal(find(snapshot, /Send now/).disabled, true, "the blank draft leaves send disabled");
+  const report = await adapter.insertText(snapshot, composer.id, "users today: 1234\nchange: +5%");
+  assert.equal(report.verified, true);
+  assert.equal(report.readBack, "users today: 1234\nchange: +5%");
+  assert.equal(fake.currentDraft(), "users today: 1234\nchange: +5%");
+  assert.deepEqual(fake.methodCalls("Input.insertText").map((c) => c.params.text), ["users today: 1234\nchange: +5%"]);
+});
+
+test("insertText refuses whitespace other than the exact blank-editor newline", async () => {
+  for (const draft of ["\t", " ", "\r", "\r\n", "\n\n", "\u00A0", "\u3000", " \n\t ", "\u00A0\n"]) {
+    const { fake, adapter } = setup();
+    fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", draft);
+    const snapshot = await adapter.observe();
+    const composer = find(snapshot, /Message #general/);
+    await rejectsRefusal(adapter.insertText(snapshot, composer.id, "new"), "text_mismatch");
+    assert.equal(fake.methodCalls("Input.insertText").length, 0);
+    assert.equal(fake.methodCalls("Input.dispatchMouseEvent").length, 0);
+    assert.equal(fake.currentDraft(), draft, "the refused draft is untouched");
+  }
+});
+
+test("editor emptiness accepts only absent, empty, and exact single-newline values", () => {
+  assert.equal(editorValueIsEmpty(null), true);
+  assert.equal(editorValueIsEmpty(undefined), true);
+  assert.equal(editorValueIsEmpty(""), true);
+  assert.equal(editorValueIsEmpty("\n"), true);
+  for (const value of [" ", "\t", "\r", "\r\n", "\n\n", "\u00A0", "\u3000"]) {
+    assert.equal(editorValueIsEmpty(value), false);
+  }
+});
+
+test("insertText still refuses any editor value holding a non-whitespace character", async () => {
+  for (const draft of ["x", "\nx", "x\n", "\n x \n", "\u00A0x", "\t\tx", "\nhello\n", " \u3000x", "x\u00A0"]) {
+    const { fake, adapter } = setup();
+    fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", draft);
+    const snapshot = await adapter.observe();
+    const composer = find(snapshot, /Message #general/);
+    await rejectsRefusal(adapter.insertText(snapshot, composer.id, "new"), "text_mismatch");
+    assert.equal(fake.methodCalls("Input.insertText").length, 0);
+    assert.equal(fake.methodCalls("Input.dispatchMouseEvent").length, 0);
+    assert.equal(fake.currentDraft(), draft, "the refused draft is untouched");
+  }
+});
+
+test("insertText read-back stays exact even when the difference is whitespace only", async () => {
+  // The emptiness classification never loosens the exact read-back equality:
+  // a page that rewrites the draft by even one newline still refuses.
+  const { fake, adapter } = setup();
+  fake.state.transformDraft = (draft) => `${draft}\n`;
+  const snapshot = await adapter.observe();
+  const composer = find(snapshot, /Message #general/);
+  await assert.rejects(adapter.insertText(snapshot, composer.id, "exact"), (/** @type {unknown} */ err) => {
+    assert.ok(err instanceof RefusalError);
+    assert.equal(err.code, "text_mismatch");
+    assert.equal(err.details.readBack, "exact\n");
+    return true;
+  });
 });
 
 /* ----------------------------- findText / waitFor ----------------------------- */

@@ -66,6 +66,12 @@ export function createFakeCdp({
     extraElements: [],
     /** @type {((draft: string) => string)|null} simulates a page that rewrites inserted text */
     transformDraft: null,
+    /**
+     * Value a completed send leaves in the composer. Default ""; a page whose
+     * cleared blank composer keeps the blank editor artifact reports a single
+     * U+000A instead.
+     */
+    clearedDraft: "",
   };
 
   /** @type {Array<{method: string, params: Record<string, unknown>}>} */
@@ -172,7 +178,7 @@ export function createFakeCdp({
         if (e.disabled || !state.posting) return;
         const draft = currentDraft();
         state.messages.set(state.path, [...currentMessages(), draft]);
-        state.drafts.set(state.path, "");
+        state.drafts.set(state.path, state.clearedDraft);
         return;
       }
       state.sideEffects.push(e.name);
@@ -252,7 +258,10 @@ export function createFakeCdp({
         const focused = state.focused === null ? null : elementById(state.focused);
         if (focused && focused.role === "textbox") {
           if (focused.key === "composer") {
-            const next = currentDraft() + String(params.text);
+            const previous = currentDraft();
+            // Chromium's single-U+000A blank-editor artifact is not document
+            // content, so inserted text replaces it as on the real page.
+            const next = previous === "" || previous === "\n" ? String(params.text) : previous + String(params.text);
             state.drafts.set(state.path, state.transformDraft ? state.transformDraft(next) : next);
           } else {
             state.sideEffects.push(`insertText into ${focused.name}`);
