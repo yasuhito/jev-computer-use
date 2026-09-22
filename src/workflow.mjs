@@ -468,11 +468,11 @@ export async function runWorkflow({
       // artifact counts as empty; every other nonempty value is a draft.
       if (!composerNow || !editorValueIsEmpty(composerNow.value)) return false;
       // The post verification compares under the canonical paragraph-aware
-      // semantics (paragraphEqual/paragraphLines in CdpAdapter) across the
-      // whole page: the real client renders each paragraph of the posted
+      // semantics (paragraphEqual/paragraphLines in CdpAdapter) within one
+      // profile-declared message container: the real client renders each paragraph of the posted
       // message as its own accessibility node, so the text's non-empty lines
-      // must appear as one contiguous run over the page's non-empty name
-      // lines in tree order. A missing, reordered, altered, or interleaved
+      // must be the container's non-empty name lines in tree order. A
+      // missing, reordered, altered, or interleaved
       // non-empty line never verifies; unnamed container nodes around the
       // paragraphs never break the run.
       const found = await adapter.findText(text, { match: "sequence" });

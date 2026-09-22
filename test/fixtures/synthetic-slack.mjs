@@ -135,7 +135,7 @@ export function conversationPath(page, c) {
  * One element in document order. `key` is stable across renders.
  * @typedef {object} Element
  * @property {string} key
- * @property {"heading"|"link"|"treeitem"|"textbox"|"button"|"statictext"|"paragraph"} role
+ * @property {"heading"|"link"|"treeitem"|"textbox"|"button"|"statictext"|"paragraph"|"listitem"} role
  * @property {string} name the accessible name the fake browser reports (empty for tree rows, as Chromium does)
  * @property {string|null} text the static text below the element, or null when it has none
  * @property {string|null} href where activating the element navigates (links and tree rows)
@@ -222,6 +222,7 @@ export function buildElements(page, { path, draft, messages, splitMessages = fal
       // blank paragraphs render as elements without text, like the browser
       // reading an empty block.
       const lines = text.split("\n").filter((line) => line !== "");
+      elements.push({ key: `message:${i}`, role: "listitem", name: "", text: null, href: null, value: null, disabled: false, attributes: {} });
       lines.forEach((line, j) => {
         elements.push({ key: `message:${i}:p${j}`, role: "statictext", name: line, text: line, href: null, value: null, disabled: false, attributes: {} });
       });

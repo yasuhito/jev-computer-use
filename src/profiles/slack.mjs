@@ -50,6 +50,7 @@ export const SLACK_SEND_QA = "texty_send_button";
 
 /** Roles whose element attributes the profile needs before it can recognize a node. */
 const ATTRIBUTE_ROLES = Object.freeze(new Set(["treeitem", "textbox", "button"]));
+const TEXT_SEQUENCE_CONTAINER_ROLES = Object.freeze(new Set(["listitem"]));
 
 /**
  * Classify a Slack client URL relative to the page origin.
@@ -107,6 +108,7 @@ export function createSlackProfile({ name, description, allowedOrigin }) {
     description,
     trusted: true,
     attributeRoles: ATTRIBUTE_ROLES,
+    textSequenceContainerRoles: TEXT_SEQUENCE_CONTAINER_ROLES,
     checkTarget(target) {
       const parsed = parseUrl(target.url);
       if (!parsed || !allowedOrigin(parsed.origin)) {

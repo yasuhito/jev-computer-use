@@ -439,6 +439,15 @@ test("send mode verifies the 2026-09-21 reproduction: the posted message renders
   assert.equal(posted.url, QA2);
 });
 
+test("send mode does not verify a sequence assembled across posted messages", async () => {
+  const env = setup({ splitMessages: true });
+  env.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [REPORT_TEXT.split("\n")[0] ?? ""]);
+  env.fake.state.transformPosted = (text) => text.split("\n").slice(1).join("\n");
+  const report = await run(env, { mode: "send", text: REPORT_TEXT });
+  assert.equal(report.status, "unverified");
+  assert.equal(report.completed, "send");
+});
+
 test("after a split-paragraph send that failed to verify, a rerun still refuses at the duplicate marker", async () => {
   // The incident's signature: the post landed, so the rerun must refuse at
   // the duplicate marker (the marker line sits inside one paragraph node),

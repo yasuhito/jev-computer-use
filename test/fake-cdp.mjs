@@ -148,6 +148,9 @@ export function createFakeCdp({
     }
     if (e.disabled) properties.push({ name: "disabled", value: { type: "boolean", value: true } });
     if (state.focused === e.id) properties.push({ name: "focused", value: { type: "boolean", value: true } });
+    const messageChildren = e.role === "listitem"
+      ? render().elements.filter((child) => child.key.startsWith(`${e.key}:p`)).map((child) => String(child.id))
+      : null;
     const node = {
       nodeId: String(e.id),
       ignored: false,
@@ -155,7 +158,7 @@ export function createFakeCdp({
       name: { type: "computedString", value: e.role === "statictext" ? slackParagraphs(e.name) : e.name },
       properties,
       backendDOMNodeId: e.id,
-      childIds: hasTextChild(e) ? [String(e.id + TEXT_CHILD_OFFSET)] : [],
+      childIds: messageChildren ?? (hasTextChild(e) ? [String(e.id + TEXT_CHILD_OFFSET)] : []),
     };
     if (e.value !== null) Object.assign(node, { value: { type: "string", value: slackParagraphs(e.value) } });
     return node;
@@ -233,7 +236,7 @@ export function createFakeCdp({
             name: { type: "computedString", value: title },
             properties: [],
             backendDOMNodeId: ROOT_ID,
-            childIds: elements.map((e) => String(e.id)),
+            childIds: elements.filter((e) => !/:p\d+$/.test(e.key)).map((e) => String(e.id)),
           },
         ];
         for (const e of elements) {

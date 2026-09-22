@@ -688,21 +688,21 @@ export class CdpAdapter {
    * blank-line join. Only blank-line paragraph-boundary differences are
    * tolerated, and every non-empty line must match exactly and in order.
    *
-   * `sequence` compares across nodes, for the post-send verification of a
+   * `sequence` compares within one profile-declared container, for the post-send verification of a
    * message the page renders as separate paragraph elements: the text's
-   * non-empty lines (paragraphLines) must appear as one contiguous run over
-   * the page's rendered non-empty name lines in accessibility-tree order. A
+   * non-empty lines (paragraphLines) must equal the lines under that container
+   * the container's rendered non-empty name lines in accessibility-tree
+   * order. A single node may also carry the whole sequence. A
    * node's name contributes its lines when it is a StaticText leaf, or when
    * no StaticText descendant carries the same text (Chromium derives such
    * containers' names from their contents, so counting both would read the
    * text twice and break the run). The same strict paragraph-aware
    * semantics as paragraphEqual apply line by line: spaces, tabs, NBSP,
    * BOM, wording, line order, and the count of non-empty lines are never
-   * normalized, and a run is broken by any missing, reordered, altered, or
+   * normalized, and a match is broken by any missing, reordered, altered, or
    * interleaved non-empty line. Nodes that contribute no line never break a
    * run, so the unnamed containers around the paragraphs are unrelated, not
-   * content. The matched nodes are the distinct nodes whose lines fall
-   * inside a matched run.
+   * content. The matched nodes are the distinct nodes carrying the matched lines.
    *
    * `contains` keeps its containment semantics: it compares the
    * whitespace-collapsed name against the whitespace-collapsed text and is
@@ -762,38 +762,40 @@ export class CdpAdapter {
         staticBelowMemo.set(nodeId, found);
         return found;
       };
-      /** @type {{line: string, backendNodeId: number}[]} */
-      const pageLines = [];
-      for (const raw of raws) {
+      /** @param {Record<string, any>} raw @returns {{line: string, backendNodeId: number}[]} */
+      const ownLines = (raw) => {
         const node = reduceAxNode(raw, "");
-        if (!node) continue;
+        if (!node) return [];
         const name = typeof raw?.name?.value === "string" ? raw.name.value : null;
-        if (name === null) continue;
+        if (name === null) return [];
         const role = typeof raw?.role?.value === "string" ? raw.role.value.toLowerCase() : "";
         if (role !== "statictext") {
           const nodeId = typeof raw?.nodeId === "string" ? raw.nodeId : null;
-          if (nodeId === null || staticBelow(nodeId)) continue;
+          if (nodeId === null || staticBelow(nodeId)) return [];
         }
-        for (const line of paragraphLines(name)) {
-          pageLines.push({ line, backendNodeId: node.backendNodeId });
+        return paragraphLines(name).map((line) => ({ line, backendNodeId: node.backendNodeId }));
+      };
+      /** @param {Record<string, any>} raw @returns {{line: string, backendNodeId: number}[]} */
+      const subtreeLines = (raw) => {
+        const lines = ownLines(raw);
+        for (const childId of Array.isArray(raw?.childIds) ? raw.childIds : []) {
+          const child = typeof childId === "string" ? byId.get(childId) : null;
+          if (child) lines.push(...subtreeLines(child));
         }
-      }
+        return lines;
+      };
+      const containerRoles = this.#profile.textSequenceContainerRoles ?? new Set();
+      const candidates = raws.flatMap((raw) => {
+        const own = ownLines(raw);
+        if (own.length > 0) return [own];
+        const role = typeof raw?.role?.value === "string" ? raw.role.value.toLowerCase() : "";
+        return containerRoles.has(role) ? [subtreeLines(raw)] : [];
+      });
       /** @type {Set<number>} */
       const hit = new Set();
-      for (let start = 0; start + expected.length <= pageLines.length; start++) {
-        if (pageLines[start]?.line !== expected[0]) continue;
-        let matched = true;
-        for (let i = 1; i < expected.length; i++) {
-          if (pageLines[start + i]?.line !== expected[i]) {
-            matched = false;
-            break;
-          }
-        }
-        if (matched) {
-          for (let i = 0; i < expected.length; i++) {
-            const entry = pageLines[start + i];
-            if (entry) hit.add(entry.backendNodeId);
-          }
+      for (const lines of candidates) {
+        if (lines.length === expected.length && lines.every((entry, index) => entry.line === expected[index])) {
+          for (const entry of lines) hit.add(entry.backendNodeId);
         }
       }
       const backendNodeIds = [...hit];

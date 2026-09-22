@@ -70,6 +70,7 @@ export const ACTIONS = Object.freeze({
  * @property {string} description
  * @property {boolean} trusted execution is only ever possible under a trusted profile
  * @property {ReadonlySet<string>} [attributeRoles] accessibility roles whose element attributes the adapter fetches (one DOM.describeNode per node) before recognition; absent means none
+ * @property {ReadonlySet<string>} [textSequenceContainerRoles] accessibility roles that bound one multi-node text sequence
  * @property {(target: ObservedTarget) => {ok: boolean, reason?: string}} checkTarget
  * @property {(node: ObservedNode, target: ObservedTarget) => Recognition|null} recognize
  * @property {(candidate: Candidate, action: ActionType, target: ObservedTarget) => {ok: boolean, reason?: string}} allowAction

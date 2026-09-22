@@ -499,6 +499,12 @@ test("findText sequence verifies a message whose paragraphs render as separate n
   assert.deepEqual(amid.backendNodeIds, [fake.idFor("message:1:p0"), fake.idFor("message:1:p1"), fake.idFor("message:1:p2")]);
 });
 
+test("findText sequence never joins paragraphs from separate messages", async () => {
+  const { fake, adapter } = setup({ splitMessages: true });
+  fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["p1", "p2\np3"]);
+  assert.equal((await adapter.findText("p1\np2\np3", { match: "sequence" })).count, 0);
+});
+
 test("findText sequence succeeds only for the exact paragraph sequence", async () => {
   // Rendered paragraphs vs requested text: a missing, reordered, altered, or
   // interleaved non-empty line never matches; blank lines and whitespace
@@ -524,7 +530,7 @@ test("findText sequence succeeds only for the exact paragraph sequence", async (
   // Blank lines between rendered paragraphs are the one tolerated artifact.
   {
     const { fake, adapter } = setup({ splitMessages: true });
-    fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["p1", "p3"]);
+    fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["p1\n\np3"]);
     assert.equal((await adapter.findText("p1\n\np3", { match: "sequence" })).count, 2, "blank-line boundaries stay non-significant");
   }
 });
@@ -546,13 +552,14 @@ test("findText sequence reads each rendered line once and named leaf nodes contr
   // the line twice and break the run, so only the leaf text counts.
   const { fake, adapter } = setup();
   fake.state.extraElements.push(
-    { key: "a", role: "statictext", name: "p1", text: "p1", href: null, value: null, disabled: false, attributes: {} },
-    { key: "b", role: "paragraph", name: "p2", text: "p2", href: null, value: null, disabled: false, attributes: {} },
-    { key: "c", role: "statictext", name: "p3", text: "p3", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom", role: "listitem", name: "", text: null, href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p0", role: "statictext", name: "p1", text: "p1", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p1", role: "paragraph", name: "p2", text: "p2", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p2", role: "statictext", name: "p3", text: "p3", href: null, value: null, disabled: false, attributes: {} },
   );
   const found = await adapter.findText("p1\np2\np3", { match: "sequence" });
   assert.equal(found.count, 3, "the duplicated paragraph-node name is read once, through its StaticText leaf");
-  assert.deepEqual(found.backendNodeIds, [fake.idFor("a"), fake.idFor("b") + TEXT_CHILD_OFFSET, fake.idFor("c")]);
+  assert.deepEqual(found.backendNodeIds, [fake.idFor("custom:p0"), fake.idFor("custom:p1") + TEXT_CHILD_OFFSET, fake.idFor("custom:p2")]);
   // A named node that carries no StaticText child still contributes its line.
   const plain = setup();
   plain.fake.state.extraElements.push({
