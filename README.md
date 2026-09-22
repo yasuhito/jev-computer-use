@@ -231,19 +231,26 @@ profile already recognized, followed by deterministic validation in code.
 - **Exact text, read back, paragraph-aware.** The text is inserted with
   `Input.insertText` (never key events) and read back from the accessibility
   tree; any difference is `text_mismatch`. One canonical comparison
-  (`paragraphEqual` in `src/cdp/adapter.mjs`) serves the read-back, the
-  send-time composer check, and the exact post verification: both strings are
-  split on LF (U+000A), only the empty segments are dropped, and every
-  remaining line must match exactly and in order. Only blank-line differences
-  are tolerated, because a rich-text editor renders each paragraph as its own
-  block and the browser's accessibility tree reads every block boundary as a
-  blank line.
+  (`paragraphEqual`/`paragraphLines` in `src/cdp/adapter.mjs`) serves the
+  read-back, the send-time composer check, and the post verification: both
+  strings are split on LF (U+000A), only the empty segments are dropped, and
+  every remaining line must match exactly and in order. Only blank-line
+  differences are tolerated, because a rich-text editor renders each
+  paragraph as its own block and the browser's accessibility tree reads every
+  block boundary as a blank line.
   Spaces, tabs, NBSP, BOM, non-empty text, line order, and the count of
   non-empty lines are never normalized. Composer emptiness still uses only
   the three representations above, and the duplicate-marker containment check
   is unchanged. After sending, the workflow waits for the composer to be
-  empty again (same classification) and the text to appear on the page under
-  the same paragraph-aware comparison; otherwise the status is `unverified`.
+  empty again (same classification) and the text to appear on the page; the
+  post verification compares the text's non-empty lines against the page's
+  rendered non-empty lines in accessibility-tree order and requires them as
+  one contiguous sequence within a single message container (`findText`
+  `match: "sequence"`), because the real client renders each paragraph of the posted message as its own
+  accessibility node and no single node carries the joined text. A missing,
+  reordered, altered, or interleaved non-empty line never verifies; unnamed
+  container nodes and unrelated rendered content around the message never
+  break the run; otherwise the status is `unverified`.
 - **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
   unless the requested name is exactly the leading name of the chosen
@@ -377,8 +384,12 @@ must yield exactly the three channel rows, the composer, and the send button.
 The fake CDP also models Slack's paragraph representation: the editor renders
 each paragraph as its own block and Chromium reads every block boundary as a
 blank line, so text typed as `p1\np2` reads back as `p1\n\np2` (a single
-U+000A blank-editor artifact is passed through untouched). The safety
-comparisons are paragraph-aware for exactly this reason.
+U+000A blank-editor artifact is passed through untouched). Posted messages can
+be modeled in the same joined form (the default) or as the real client
+renders them in the message list, one element per paragraph
+(`splitMessages`), which is what the post verification's paragraph-sequence
+comparison handles. The safety comparisons are paragraph-aware for exactly
+this reason.
 
 ## jev-cu-report: QA2 daily New Users report
 

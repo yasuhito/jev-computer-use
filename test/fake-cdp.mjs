@@ -13,7 +13,8 @@ import { loadSyntheticPage, buildElements } from "./fixtures/synthetic-slack.mjs
 
 const ROOT_ID = 1;
 const FIRST_ELEMENT_ID = 10;
-const TEXT_CHILD_OFFSET = 10_000;
+/** Offset between an element's backend node id and its StaticText child's id. */
+export const TEXT_CHILD_OFFSET = 10_000;
 
 /**
  * The AX representation the synthetic page reports for editor content: the
@@ -27,7 +28,7 @@ const TEXT_CHILD_OFFSET = 10_000;
 const slackParagraphs = (s) => (s === "\n" ? s : s.replace(/\n/g, "\n\n"));
 
 /**
- * @param {{origin?: string, startPath?: string, targetId?: string, viewport?: {width: number, height: number}, hitReturnsChild?: boolean, page?: import("./fixtures/synthetic-slack.mjs").SyntheticPage}} [options]
+ * @param {{origin?: string, startPath?: string, targetId?: string, viewport?: {width: number, height: number, pageX?: number, pageY?: number}, hitReturnsChild?: boolean, page?: import("./fixtures/synthetic-slack.mjs").SyntheticPage, splitMessages?: boolean}} [options]
  */
 export function createFakeCdp({
   origin = "https://app.slack.com",
@@ -36,6 +37,7 @@ export function createFakeCdp({
   viewport = { width: 1280, height: 4000 },
   hitReturnsChild = false,
   page = loadSyntheticPage(),
+  splitMessages = false,
 } = {}) {
   /** @type {Map<string, number>} */
   const idsByKey = new Map();
@@ -77,6 +79,10 @@ export function createFakeCdp({
     extraElements: [],
     /** @type {((draft: string) => string)|null} simulates a page that rewrites inserted text */
     transformDraft: null,
+    /** @type {((draft: string) => string)|null} simulates a page that renders the posted message differently from the drafted text */
+    transformPosted: null,
+    /** Render each posted message as one element per paragraph (the real client's message list), not one joined node. */
+    splitMessages,
     /**
      * Value a completed send leaves in the composer. Default ""; a page whose
      * cleared blank composer keeps the blank editor artifact reports a single
@@ -93,7 +99,12 @@ export function createFakeCdp({
 
   /** @returns {{elements: Array<Element & {id: number, index: number}>, title: string}} */
   const render = () => {
-    const built = buildElements(page, { path: state.path, draft: currentDraft(), messages: currentMessages() });
+    const built = buildElements(page, {
+      path: state.path,
+      draft: currentDraft(),
+      messages: currentMessages(),
+      splitMessages: state.splitMessages,
+    });
     const elements = [...built.elements, ...state.extraElements].map((e, index) => ({ ...e, id: idFor(e.key), index }));
     const title = state.titleSuffix ? `${built.title} ${state.titleSuffix}` : built.title;
     return { elements, title };
@@ -137,6 +148,9 @@ export function createFakeCdp({
     }
     if (e.disabled) properties.push({ name: "disabled", value: { type: "boolean", value: true } });
     if (state.focused === e.id) properties.push({ name: "focused", value: { type: "boolean", value: true } });
+    const messageChildren = e.role === "listitem"
+      ? render().elements.filter((child) => child.key.startsWith(`${e.key}:p`)).map((child) => String(child.id))
+      : null;
     const node = {
       nodeId: String(e.id),
       ignored: false,
@@ -144,7 +158,7 @@ export function createFakeCdp({
       name: { type: "computedString", value: e.role === "statictext" ? slackParagraphs(e.name) : e.name },
       properties,
       backendDOMNodeId: e.id,
-      childIds: hasTextChild(e) ? [String(e.id + TEXT_CHILD_OFFSET)] : [],
+      childIds: messageChildren ?? (hasTextChild(e) ? [String(e.id + TEXT_CHILD_OFFSET)] : []),
     };
     if (e.value !== null) Object.assign(node, { value: { type: "string", value: slackParagraphs(e.value) } });
     return node;
@@ -188,7 +202,8 @@ export function createFakeCdp({
       if (e.key === "send") {
         if (e.disabled || !state.posting) return;
         const draft = currentDraft();
-        state.messages.set(state.path, [...currentMessages(), draft]);
+        const posted = state.transformPosted ? state.transformPosted(draft) : draft;
+        state.messages.set(state.path, [...currentMessages(), posted]);
         state.drafts.set(state.path, state.clearedDraft);
         return;
       }
@@ -221,7 +236,7 @@ export function createFakeCdp({
             name: { type: "computedString", value: title },
             properties: [],
             backendDOMNodeId: ROOT_ID,
-            childIds: elements.map((e) => String(e.id)),
+            childIds: elements.filter((e) => !/:p\d+$/.test(e.key)).map((e) => String(e.id)),
           },
         ];
         for (const e of elements) {
@@ -234,12 +249,15 @@ export function createFakeCdp({
         const e = elementById(Number(params.backendNodeId));
         if (!e) throw new CdpProtocolError(method, { code: -32000, message: "Could not find node with given id" });
         const b = box(e);
-        const content = [b.x, b.y, b.x + b.width, b.y, b.x + b.width, b.y + b.height, b.x, b.y + b.height];
+        const x = b.x - (state.viewport.pageX ?? 0);
+        const y = b.y - (state.viewport.pageY ?? 0);
+        const content = [x, y, x + b.width, y, x + b.width, y + b.height, x, y + b.height];
         return { model: { content, padding: content, border: content, margin: content, width: b.width, height: b.height } };
       }
       case "Page.getLayoutMetrics":
         return {
-          cssLayoutViewport: { pageX: 0, pageY: 0, clientWidth: state.viewport.width, clientHeight: state.viewport.height },
+          cssLayoutViewport: { pageX: state.viewport.pageX ?? 0, pageY: state.viewport.pageY ?? 0, clientWidth: state.viewport.width, clientHeight: state.viewport.height },
+          cssVisualViewport: { pageX: state.viewport.pageX ?? 0, pageY: state.viewport.pageY ?? 0, clientWidth: state.viewport.width, clientHeight: state.viewport.height },
         };
       case "DOM.getNodeForLocation": {
         const e = elementAt(Number(params.x), Number(params.y));
@@ -260,7 +278,7 @@ export function createFakeCdp({
       }
       case "Input.dispatchMouseEvent": {
         if (params.type === "mouseReleased") {
-          const e = elementAt(Number(params.x), Number(params.y));
+          const e = elementAt(Number(params.x) + (state.viewport.pageX ?? 0), Number(params.y) + (state.viewport.pageY ?? 0));
           if (e) activate(e);
         }
         return {};

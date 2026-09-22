@@ -229,8 +229,8 @@ export function editorValueIsEmpty(value) {
 /**
  * The canonical paragraph-aware text equality for every safety comparison
  * against page-read text: the insertText read-back, the send-time composer
- * check, and the exact findText post-verification all compare through this
- * one helper.
+ * check, and the post-verification sequence match all compare through this
+ * one helper and through paragraphLines.
  *
  * A rich-text editor lays each paragraph out as its own block, and the
  * browser's accessibility tree reads every block boundary as a blank line,
@@ -247,11 +247,23 @@ export function editorValueIsEmpty(value) {
  */
 export function paragraphEqual(actual, expected) {
   if (typeof actual !== "string" || typeof expected !== "string") return false;
-  /** @param {string} s */
-  const lines = (s) => s.split("\n").filter((line) => line !== "");
-  const actualLines = lines(actual);
-  const expectedLines = lines(expected);
+  const actualLines = paragraphLines(actual);
+  const expectedLines = paragraphLines(expected);
   return actualLines.length === expectedLines.length && actualLines.every((line, index) => line === expectedLines[index]);
+}
+
+/**
+ * The canonical non-empty line split every paragraph-aware comparison is
+ * built on: a string is split on LF (U+000A) and only the empty segments
+ * are dropped. A null or undefined read contributes no lines. Nothing else
+ * is normalized: spaces, tabs, NBSP, BOM, non-empty text, and line order
+ * all matter.
+ *
+ * @param {string|null|undefined} text
+ * @returns {string[]}
+ */
+export function paragraphLines(text) {
+  return typeof text === "string" ? text.split("\n").filter((line) => line !== "") : [];
 }
 
 /**
@@ -528,7 +540,8 @@ export class CdpAdapter {
     }
     const x = Math.round(sx / 4);
     const y = Math.round(sy / 4);
-    const { cssLayoutViewport } = await this.#send("Page.getLayoutMetrics", {}, "locate");
+    const { cssVisualViewport, cssLayoutViewport } = await this.#send("Page.getLayoutMetrics", {}, "locate");
+    const viewport = cssVisualViewport ?? cssLayoutViewport;
     const width = Number(cssLayoutViewport?.clientWidth);
     const height = Number(cssLayoutViewport?.clientHeight);
     if (!(x >= 0 && y >= 0 && x < width && y < height)) {
@@ -536,7 +549,11 @@ export class CdpAdapter {
     }
     const hit = await this.#send(
       "DOM.getNodeForLocation",
-      { x, y, includeUserAgentShadowDOM: false },
+      {
+        x: x + Number(viewport?.pageX ?? 0),
+        y: y + Number(viewport?.pageY ?? 0),
+        includeUserAgentShadowDOM: false,
+      },
       "locate",
     );
     const hitId = hit?.backendNodeId;
@@ -665,18 +682,39 @@ export class CdpAdapter {
   }
 
   /**
-   * Count accessibility nodes matching the text. `exact` (the default)
-   * compares the raw accessible name against the raw text through the
-   * canonical paragraph-aware equality (paragraphEqual): only blank-line
-   * paragraph-boundary differences are tolerated, and every non-empty line
-   * must match exactly and in order. `contains` keeps its containment
-   * semantics: it compares the whitespace-collapsed name against the
-   * whitespace-collapsed text and is what the duplicate-marker guard uses.
-   * Read-only; used to verify that a message appeared on the page and to
-   * detect that content carrying a caller's marker is already present.
+   * Count accessibility nodes matching the text. Read-only; used to verify
+   * that a message appeared on the page and to detect that content carrying
+   * a caller's marker is already present.
+   *
+   * `exact` (the default) compares one node at a time: the raw accessible
+   * name against the raw text through the canonical paragraph-aware
+   * equality (paragraphEqual), or a container whose direct paragraph
+   * children carry the paragraphs as their accessible names through their
+   * blank-line join. Only blank-line paragraph-boundary differences are
+   * tolerated, and every non-empty line must match exactly and in order.
+   *
+   * `sequence` compares within one profile-declared container, for the
+   * post-send verification of a message the page renders as separate
+   * paragraph elements: the text's non-empty lines (paragraphLines) must
+   * appear as one contiguous run in accessibility-tree order. A single node
+   * may also carry the whole sequence. A
+   * node's name contributes its lines when it is a StaticText leaf, or when
+   * no StaticText descendant carries the same text (Chromium derives such
+   * containers' names from their contents, so counting both would read the
+   * text twice and break the run). The same strict paragraph-aware
+   * semantics as paragraphEqual apply line by line: spaces, tabs, NBSP,
+   * BOM, wording, line order, and the count of non-empty lines are never
+   * normalized, and a match is broken by any missing, reordered, altered, or
+   * interleaved non-empty line. Nodes that contribute no line never break a
+   * run, so the unnamed containers around the paragraphs are unrelated, not
+   * content. The matched nodes are the distinct nodes carrying the matched lines.
+   *
+   * `contains` keeps its containment semantics: it compares the
+   * whitespace-collapsed name against the whitespace-collapsed text and is
+   * what the duplicate-marker guard uses.
    *
    * @param {string} text
-   * @param {{match?: "exact"|"contains"}} [options]
+   * @param {{match?: "exact"|"contains"|"sequence"}} [options]
    * @returns {Promise<{count: number, backendNodeIds: number[]}>}
    */
   async findText(text, { match = "exact" } = {}) {
@@ -684,8 +722,9 @@ export class CdpAdapter {
     const wanted = sanitizeLabel(text, MAX_VALUE_LENGTH);
     if (wanted.length === 0) return { count: 0, backendNodeIds: [] };
     const { nodes } = await this.#send("Accessibility.getFullAXTree");
+    const raws = Array.isArray(nodes) ? nodes : [];
     const byId = new Map(
-      (Array.isArray(nodes) ? nodes : [])
+      raws
         .filter((node) => typeof node?.nodeId === "string")
         .map((node) => [node.nodeId, node]),
     );
@@ -698,9 +737,82 @@ export class CdpAdapter {
         .map((child) => (typeof child?.name?.value === "string" ? child.name.value : null));
       return paragraphs.length > 1 && paragraphs.every((part) => part !== null) ? paragraphs.join("\n\n") : null;
     };
+    if (match === "sequence") {
+      const expected = paragraphLines(text);
+      if (expected.length === 0) return { count: 0, backendNodeIds: [] };
+      // A node's name contributes its lines only when its text is not
+      // already represented by a StaticText descendant: a StaticText leaf is
+      // the rendered text itself, while a container's name derived from its
+      // contents would read the same text a second time.
+      /** @type {Map<string, boolean>} */
+      const staticBelowMemo = new Map();
+      /** @param {string} nodeId @returns {boolean} */
+      const staticBelow = (nodeId) => {
+        const known = staticBelowMemo.get(nodeId);
+        if (known !== undefined) return known;
+        staticBelowMemo.set(nodeId, false); // cycle guard; the tree has none but the protocol does not promise it
+        const raw = byId.get(nodeId);
+        let found = false;
+        if (raw && Array.isArray(raw.childIds)) {
+          for (const childId of /** @type {string[]} */ (raw.childIds)) {
+            if (typeof childId !== "string") continue;
+            const child = byId.get(childId);
+            const childRole = typeof child?.role?.value === "string" ? child.role.value.toLowerCase() : "";
+            if (childRole === "statictext" || staticBelow(childId)) {
+              found = true;
+              break;
+            }
+          }
+        }
+        staticBelowMemo.set(nodeId, found);
+        return found;
+      };
+      /** @param {Record<string, any>} raw @returns {{line: string, backendNodeId: number}[]} */
+      const ownLines = (raw) => {
+        const node = reduceAxNode(raw, "");
+        if (!node) return [];
+        const name = typeof raw?.name?.value === "string" ? raw.name.value : null;
+        if (name === null) return [];
+        const role = typeof raw?.role?.value === "string" ? raw.role.value.toLowerCase() : "";
+        if (role !== "statictext") {
+          const nodeId = typeof raw?.nodeId === "string" ? raw.nodeId : null;
+          if (nodeId === null || staticBelow(nodeId)) return [];
+        }
+        return paragraphLines(name).map((line) => ({ line, backendNodeId: node.backendNodeId }));
+      };
+      /** @param {Record<string, any>} raw @returns {{line: string, backendNodeId: number}[]} */
+      const subtreeLines = (raw) => {
+        const lines = ownLines(raw);
+        for (const childId of Array.isArray(raw?.childIds) ? raw.childIds : []) {
+          const child = typeof childId === "string" ? byId.get(childId) : null;
+          if (child) lines.push(...subtreeLines(child));
+        }
+        return lines;
+      };
+      const containerRoles = this.#profile.textSequenceContainerRoles ?? new Set();
+      const candidates = raws.flatMap((raw) => {
+        const own = ownLines(raw);
+        if (own.length > 0) return [own];
+        const role = typeof raw?.role?.value === "string" ? raw.role.value.toLowerCase() : "";
+        return containerRoles.has(role) ? [subtreeLines(raw)] : [];
+      });
+      /** @type {Set<number>} */
+      const hit = new Set();
+      for (const lines of candidates) {
+        for (let start = 0; start + expected.length <= lines.length; start++) {
+          if (!expected.every((line, index) => lines[start + index]?.line === line)) continue;
+          for (let index = 0; index < expected.length; index++) {
+            const entry = lines[start + index];
+            if (entry) hit.add(entry.backendNodeId);
+          }
+        }
+      }
+      const backendNodeIds = [...hit];
+      return { count: backendNodeIds.length, backendNodeIds };
+    }
     /** @type {number[]} */
     const backendNodeIds = [];
-    for (const raw of Array.isArray(nodes) ? nodes : []) {
+    for (const raw of raws) {
       const node = reduceAxNode(raw, "");
       if (!node) continue;
       const name = typeof raw?.name?.value === "string" ? raw.name.value : null;

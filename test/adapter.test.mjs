@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { CdpAdapter, ALLOWED_CDP_METHODS, MAX_ATTRIBUTE_LOOKUPS, urlReached, digestCandidates, editorValueIsEmpty, paragraphEqual } from "../src/cdp/adapter.mjs";
 import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
 import { RefusalError, TransportError, CdpProtocolError } from "../src/errors.mjs";
-import { createFakeCdp } from "./fake-cdp.mjs";
+import { createFakeCdp, TEXT_CHILD_OFFSET } from "./fake-cdp.mjs";
 import { loadSyntheticPage } from "./fixtures/synthetic-slack.mjs";
 import { fakeClock } from "./helpers.mjs";
 
@@ -177,6 +177,19 @@ test("click accepts a hit test that resolves to a descendant of the target", asy
   const report = await adapter.click(snapshot, dest.id, { expectUrl: dest.url });
   assert.equal(report.verified, true);
   assert.equal(fake.methodCalls("DOM.describeNode").filter((c) => c.params.depth === -1).length, 1);
+});
+
+test("click hit-tests in page coordinates after scrolling", async () => {
+  const { fake, adapter } = setup({ viewport: { width: 1280, height: 400, pageX: 0, pageY: 80 } });
+  const snapshot = await adapter.observe();
+  const dest = find(snapshot, /^random/);
+  const report = await adapter.click(snapshot, dest.id, { expectUrl: dest.url });
+  assert.deepEqual(report.point, { x: 170, y: 75 });
+  const [hitTest] = fake.methodCalls("DOM.getNodeForLocation");
+  assert.ok(hitTest);
+  assert.deepEqual(hitTest.params, { x: 170, y: 155, includeUserAgentShadowDOM: false });
+  assert.equal(report.verified, true);
+  assert.equal(fake.currentUrl(), report.urlAfter);
 });
 
 test("click reports unverified when the page never reaches the expected URL", async () => {
@@ -477,6 +490,119 @@ test("findText exact verifies a multi-paragraph message across blank-line joins 
   assert.equal((await adapter.findText("users today: 1\nextra\nchange: +5%")).count, 0, "an added non-empty line refuses");
   assert.equal((await adapter.findText("change: +5%\nusers today: 1")).count, 0, "reordered lines refuse");
   assert.equal((await adapter.findText("users today: 1\nchange: +5%", { match: "contains" })).count, 1, "containment keeps matching the joined name");
+});
+
+test("findText sequence verifies a message whose paragraphs render as separate nodes", async () => {
+  // The 2026-09-21 live qa2 post: the real client renders the six paragraphs
+  // of the posted report as six separate accessibility nodes, so no single
+  // node carries the exact full text. The sequence match reads the message's
+  // non-empty lines as one contiguous run across those nodes.
+  const { fake, adapter } = setup({ splitMessages: true });
+  const text = "p1\np2\np3";
+  fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [text]);
+  const found = await adapter.findText(text, { match: "sequence" });
+  assert.equal(found.count, 3, "each split paragraph node contributes one line of the sequence");
+  assert.deepEqual(found.backendNodeIds, [fake.idFor("message:0:p0"), fake.idFor("message:0:p1"), fake.idFor("message:0:p2")]);
+  // Blank-line paragraph boundaries in the requested text are not significant.
+  assert.equal((await adapter.findText("p1\n\np2\n\np3", { match: "sequence" })).count, 3);
+  // Unrelated rendered content before and after the post never breaks the run.
+  fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["earlier post", text, "later message"]);
+  const amid = await adapter.findText(text, { match: "sequence" });
+  assert.equal(amid.count, 3);
+  assert.deepEqual(amid.backendNodeIds, [fake.idFor("message:1:p0"), fake.idFor("message:1:p1"), fake.idFor("message:1:p2")]);
+});
+
+test("findText sequence never joins paragraphs from separate messages", async () => {
+  const { fake, adapter } = setup({ splitMessages: true });
+  fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["p1", "p2\np3"]);
+  assert.equal((await adapter.findText("p1\np2\np3", { match: "sequence" })).count, 0);
+});
+
+test("findText sequence ignores metadata around paragraphs inside one message", async () => {
+  const { fake, adapter } = setup();
+  fake.state.extraElements.push(
+    { key: "custom", role: "listitem", name: "", text: null, href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p-author", role: "statictext", name: "Jev", text: "Jev", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p0", role: "statictext", name: "p1", text: "p1", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p1", role: "statictext", name: "p2", text: "p2", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p2", role: "statictext", name: "p3", text: "p3", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p-time", role: "statictext", name: "10:00 AM", text: "10:00 AM", href: null, value: null, disabled: false, attributes: {} },
+  );
+  const found = await adapter.findText("p1\np2\np3", { match: "sequence" });
+  assert.equal(found.count, 3);
+  assert.deepEqual(found.backendNodeIds, [fake.idFor("custom:p0"), fake.idFor("custom:p1"), fake.idFor("custom:p2")]);
+});
+
+test("findText sequence succeeds only for the exact paragraph sequence", async () => {
+  // Rendered paragraphs vs requested text: a missing, reordered, altered, or
+  // interleaved non-empty line never matches; blank lines and whitespace
+  // inside a line are never normalized.
+  const cases = /** @type {const} */ ([
+    ["p1\np2", "p1\np2\np3"], // the page is missing the last paragraph
+    ["p2\np3", "p1\np2\np3"], // the page is missing the first paragraph
+    ["p1\np3", "p1\np2\np3"], // the page is missing a middle paragraph
+    ["p2\np1\np3", "p1\np2\np3"], // reordered paragraphs
+    ["p1\npX\np3", "p1\np2\np3"], // an altered paragraph
+    ["p1\np2\nextra\np3", "p1\np2\np3"], // an extra non-empty paragraph inside the sequence
+    ["p1\np2 \np3", "p1\np2\np3"], // a trailing space in a rendered line
+    ["p1\np2\np3", "p1\n p2\np3"], // a leading space in the requested line
+    ["p1 p2\np3", "p1\tp2\np3"], // tab and space differ
+    ["p1\u00A0p2\np3", "p1 p2\np3"], // NBSP differs
+    ["\uFEFFp1\np2\np3", "p1\np2\np3"], // BOM differs
+  ]);
+  for (const [rendered, requested] of cases) {
+    const { fake, adapter } = setup({ splitMessages: true });
+    fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [rendered]);
+    assert.equal((await adapter.findText(requested, { match: "sequence" })).count, 0, JSON.stringify({ rendered, requested }));
+  }
+  // Blank lines between rendered paragraphs are the one tolerated artifact.
+  {
+    const { fake, adapter } = setup({ splitMessages: true });
+    fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["p1\n\np3"]);
+    assert.equal((await adapter.findText("p1\n\np3", { match: "sequence" })).count, 2, "blank-line boundaries stay non-significant");
+  }
+});
+
+test("findText sequence still verifies the single-node paragraph representation", async () => {
+  // The representation the composer read-back accepts (one node whose name
+  // reads every paragraph boundary as a blank line) verifies through the same
+  // sequence match: the run may span lines inside one node.
+  const { fake, adapter } = setup();
+  fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["p1\n\np2\n\np3"]);
+  const found = await adapter.findText("p1\np2\np3", { match: "sequence" });
+  assert.equal(found.count, 1);
+  assert.deepEqual(found.backendNodeIds, [fake.idFor("message:0")]);
+});
+
+test("findText sequence reads each rendered line once and named leaf nodes contribute too", async () => {
+  // The real client renders a paragraph as its own element whose accessible
+  // name and StaticText child both carry the line; counting both would read
+  // the line twice and break the run, so only the leaf text counts.
+  const { fake, adapter } = setup();
+  fake.state.extraElements.push(
+    { key: "custom", role: "listitem", name: "", text: null, href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p0", role: "statictext", name: "p1", text: "p1", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p1", role: "paragraph", name: "p2", text: "p2", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p2", role: "statictext", name: "p3", text: "p3", href: null, value: null, disabled: false, attributes: {} },
+  );
+  const found = await adapter.findText("p1\np2\np3", { match: "sequence" });
+  assert.equal(found.count, 3, "the duplicated paragraph-node name is read once, through its StaticText leaf");
+  assert.deepEqual(found.backendNodeIds, [fake.idFor("custom:p0"), fake.idFor("custom:p1") + TEXT_CHILD_OFFSET, fake.idFor("custom:p2")]);
+  // A named node that carries no StaticText child still contributes its line.
+  const plain = setup();
+  plain.fake.state.extraElements.push({
+    key: "labeled",
+    role: "treeitem",
+    name: "only label",
+    text: null,
+    href: null,
+    value: null,
+    disabled: false,
+    attributes: {},
+  });
+  const labeled = await plain.adapter.findText("only label", { match: "sequence" });
+  assert.equal(labeled.count, 1);
+  assert.deepEqual(labeled.backendNodeIds, [plain.fake.idFor("labeled")]);
 });
 
 test("urlReached compares normalized URLs and accepts sub-paths only at a boundary", () => {
