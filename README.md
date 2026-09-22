@@ -226,9 +226,8 @@ profile already recognized, followed by deterministic validation in code.
   destination and the composer to be empty (an absent value, `""`, or exactly
   one newline U+000A counts as empty because Chromium reports that newline for
   the visually blank contenteditable composer; every other value refuses);
-  before
-  sending, the page must still be at the destination and the composer must
-  still hold the exact text.
+  before sending, the page must still be at the destination and the composer
+  must still hold the exact text.
 - **Exact text, read back.** The text is inserted with `Input.insertText`
   (never key events) and read back from the accessibility tree; any difference
   is `text_mismatch`, and the comparison is exact and untrimmed. Composer
