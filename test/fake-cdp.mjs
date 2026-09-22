@@ -16,6 +16,17 @@ const FIRST_ELEMENT_ID = 10;
 const TEXT_CHILD_OFFSET = 10_000;
 
 /**
+ * The AX representation the synthetic page reports for editor content: the
+ * blank-editor artifact (a single U+000A value on a visually empty
+ * composer) is passed through untouched, and any other paragraph-bearing
+ * string reads every LF as a blank line (double LF), the way the real
+ * client's editor is rendered and read back.
+ *
+ * @param {string} s
+ */
+const slackParagraphs = (s) => (s === "\n" ? s : s.replace(/\n/g, "\n\n"));
+
+/**
  * @param {{origin?: string, startPath?: string, targetId?: string, viewport?: {width: number, height: number}, hitReturnsChild?: boolean, page?: import("./fixtures/synthetic-slack.mjs").SyntheticPage}} [options]
  */
 export function createFakeCdp({
@@ -130,12 +141,12 @@ export function createFakeCdp({
       nodeId: String(e.id),
       ignored: false,
       role: { type: "role", value: e.role === "statictext" ? "StaticText" : e.role },
-      name: { type: "computedString", value: e.name },
+      name: { type: "computedString", value: e.role === "statictext" ? slackParagraphs(e.name) : e.name },
       properties,
       backendDOMNodeId: e.id,
       childIds: hasTextChild(e) ? [String(e.id + TEXT_CHILD_OFFSET)] : [],
     };
-    if (e.value !== null) Object.assign(node, { value: { type: "string", value: e.value } });
+    if (e.value !== null) Object.assign(node, { value: { type: "string", value: slackParagraphs(e.value) } });
     return node;
   };
 
@@ -147,7 +158,7 @@ export function createFakeCdp({
     nodeId: String(e.id + TEXT_CHILD_OFFSET),
     ignored: false,
     role: { type: "role", value: "StaticText" },
-    name: { type: "computedString", value: e.text ?? "" },
+    name: { type: "computedString", value: slackParagraphs(e.text ?? "") },
     properties: [],
     backendDOMNodeId: e.id + TEXT_CHILD_OFFSET,
     childIds: [],

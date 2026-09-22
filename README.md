@@ -227,13 +227,23 @@ profile already recognized, followed by deterministic validation in code.
   one newline U+000A counts as empty because Chromium reports that newline for
   the visually blank contenteditable composer; every other value refuses);
   before sending, the page must still be at the destination and the composer
-  must still hold the exact text.
-- **Exact text, read back.** The text is inserted with `Input.insertText`
-  (never key events) and read back from the accessibility tree; any difference
-  is `text_mismatch`, and the comparison is exact and untrimmed. Composer
-  emptiness uses only the three representations above. After sending, the
-  workflow waits for the composer to be empty again (same classification) and
-  the exact text to appear on the page; otherwise the status is `unverified`.
+  must still hold the text under the same paragraph-aware comparison.
+- **Exact text, read back, paragraph-aware.** The text is inserted with
+  `Input.insertText` (never key events) and read back from the accessibility
+  tree; any difference is `text_mismatch`. One canonical comparison
+  (`paragraphEqual` in `src/cdp/adapter.mjs`) serves the read-back, the
+  send-time composer check, and the exact post verification: both strings are
+  split on LF (U+000A), only the empty segments are dropped, and every
+  remaining line must match exactly and in order. Only blank-line differences
+  are tolerated, because a rich-text editor renders each paragraph as its own
+  block and the browser's accessibility tree reads every block boundary as a
+  blank line.
+  Spaces, tabs, NBSP, BOM, non-empty text, line order, and the count of
+  non-empty lines are never normalized. Composer emptiness still uses only
+  the three representations above, and the duplicate-marker containment check
+  is unchanged. After sending, the workflow waits for the composer to be
+  empty again (same classification) and the text to appear on the page under
+  the same paragraph-aware comparison; otherwise the status is `unverified`.
 - **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
   unless the requested name is exactly the leading name of the chosen
@@ -328,7 +338,7 @@ point, URLs, and read-back), the post verification, and in dry-run a `plan`.
 | `stale_snapshot` / `stale_target` | the decision is older than 20 s, or the session's target changed |
 | `changed_state` | URL, candidate set, or the selected element changed before acting |
 | `not_actionable` | the element is disabled or has no clickable box in the viewport |
-| `text_mismatch` | the composer is not absent, empty, or exactly one newline, or the read-back differs from the exact text |
+| `text_mismatch` | the composer is not absent, empty, or exactly one newline, or the read-back differs from the caller text beyond paragraph blank-line differences |
 | `destination_mismatch` | the page is not at the selected destination, or (with `exactDestination`) the chosen link does not name the requested destination exactly |
 | `duplicate_post` | (with `duplicateMarker`) the destination already shows content carrying the marker |
 
@@ -364,6 +374,11 @@ accessible name a real Chromium computes as empty, section and direct-message
 rows the profile must skip, and a composer and send button that only Slack's
 `data-qa` hooks identify). Observing the `tree` shape through a real Chromium
 must yield exactly the three channel rows, the composer, and the send button.
+The fake CDP also models Slack's paragraph representation: the editor renders
+each paragraph as its own block and Chromium reads every block boundary as a
+blank line, so text typed as `p1\np2` reads back as `p1\n\np2` (a single
+U+000A blank-editor artifact is passed through untouched). The safety
+comparisons are paragraph-aware for exactly this reason.
 
 ## jev-cu-report: QA2 daily New Users report
 
