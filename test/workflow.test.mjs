@@ -448,6 +448,23 @@ test("send mode does not verify a sequence assembled across posted messages", as
   assert.equal(report.completed, "send");
 });
 
+test("send mode verifies split paragraphs surrounded by message metadata", async () => {
+  const env = setup({ splitMessages: true });
+  env.fake.state.extraElements.push({
+    key: "message:0:pmeta",
+    role: "statictext",
+    name: "10:00 AM",
+    text: "10:00 AM",
+    href: null,
+    value: null,
+    disabled: false,
+    attributes: {},
+  });
+  const report = await run(env, { mode: "send", text: REPORT_TEXT });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
+});
+
 test("after a split-paragraph send that failed to verify, a rerun still refuses at the duplicate marker", async () => {
   // The incident's signature: the post landed, so the rerun must refuse at
   // the duplicate marker (the marker line sits inside one paragraph node),

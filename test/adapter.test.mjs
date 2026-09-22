@@ -505,6 +505,21 @@ test("findText sequence never joins paragraphs from separate messages", async ()
   assert.equal((await adapter.findText("p1\np2\np3", { match: "sequence" })).count, 0);
 });
 
+test("findText sequence ignores metadata around paragraphs inside one message", async () => {
+  const { fake, adapter } = setup();
+  fake.state.extraElements.push(
+    { key: "custom", role: "listitem", name: "", text: null, href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p-author", role: "statictext", name: "Jev", text: "Jev", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p0", role: "statictext", name: "p1", text: "p1", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p1", role: "statictext", name: "p2", text: "p2", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p2", role: "statictext", name: "p3", text: "p3", href: null, value: null, disabled: false, attributes: {} },
+    { key: "custom:p-time", role: "statictext", name: "10:00 AM", text: "10:00 AM", href: null, value: null, disabled: false, attributes: {} },
+  );
+  const found = await adapter.findText("p1\np2\np3", { match: "sequence" });
+  assert.equal(found.count, 3);
+  assert.deepEqual(found.backendNodeIds, [fake.idFor("custom:p0"), fake.idFor("custom:p1"), fake.idFor("custom:p2")]);
+});
+
 test("findText sequence succeeds only for the exact paragraph sequence", async () => {
   // Rendered paragraphs vs requested text: a missing, reordered, altered, or
   // interleaved non-empty line never matches; blank lines and whitespace

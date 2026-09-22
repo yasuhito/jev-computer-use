@@ -688,11 +688,11 @@ export class CdpAdapter {
    * blank-line join. Only blank-line paragraph-boundary differences are
    * tolerated, and every non-empty line must match exactly and in order.
    *
-   * `sequence` compares within one profile-declared container, for the post-send verification of a
-   * message the page renders as separate paragraph elements: the text's
-   * non-empty lines (paragraphLines) must equal the lines under that container
-   * the container's rendered non-empty name lines in accessibility-tree
-   * order. A single node may also carry the whole sequence. A
+   * `sequence` compares within one profile-declared container, for the
+   * post-send verification of a message the page renders as separate
+   * paragraph elements: the text's non-empty lines (paragraphLines) must
+   * appear as one contiguous run in accessibility-tree order. A single node
+   * may also carry the whole sequence. A
    * node's name contributes its lines when it is a StaticText leaf, or when
    * no StaticText descendant carries the same text (Chromium derives such
    * containers' names from their contents, so counting both would read the
@@ -794,8 +794,12 @@ export class CdpAdapter {
       /** @type {Set<number>} */
       const hit = new Set();
       for (const lines of candidates) {
-        if (lines.length === expected.length && lines.every((entry, index) => entry.line === expected[index])) {
-          for (const entry of lines) hit.add(entry.backendNodeId);
+        for (let start = 0; start + expected.length <= lines.length; start++) {
+          if (!expected.every((line, index) => lines[start + index]?.line === line)) continue;
+          for (let index = 0; index < expected.length; index++) {
+            const entry = lines[start + index];
+            if (entry) hit.add(entry.backendNodeId);
+          }
         }
       }
       const backendNodeIds = [...hit];

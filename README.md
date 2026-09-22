@@ -245,8 +245,8 @@ profile already recognized, followed by deterministic validation in code.
   empty again (same classification) and the text to appear on the page; the
   post verification compares the text's non-empty lines against the page's
   rendered non-empty lines in accessibility-tree order and requires them as
-  one exact sequence within a single message container (`findText` `match: "sequence"`), because the real
-  client renders each paragraph of the posted message as its own
+  one contiguous sequence within a single message container (`findText`
+  `match: "sequence"`), because the real client renders each paragraph of the posted message as its own
   accessibility node and no single node carries the joined text. A missing,
   reordered, altered, or interleaved non-empty line never verifies; unnamed
   container nodes and unrelated rendered content around the message never
