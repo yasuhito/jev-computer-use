@@ -683,6 +683,19 @@ export class CdpAdapter {
     const wanted = sanitizeLabel(text, MAX_VALUE_LENGTH);
     if (wanted.length === 0) return { count: 0, backendNodeIds: [] };
     const { nodes } = await this.#send("Accessibility.getFullAXTree");
+    const byId = new Map(
+      (Array.isArray(nodes) ? nodes : [])
+        .filter((node) => typeof node?.nodeId === "string")
+        .map((node) => [node.nodeId, node]),
+    );
+    const paragraphText = (raw) => {
+      if (!Array.isArray(raw?.childIds)) return null;
+      const paragraphs = raw.childIds
+        .map((id) => byId.get(id))
+        .filter((child) => child?.role?.value?.toLowerCase() === "paragraph")
+        .map((child) => (typeof child?.name?.value === "string" ? child.name.value : null));
+      return paragraphs.length > 1 && paragraphs.every((part) => part !== null) ? paragraphs.join("\n\n") : null;
+    };
     /** @type {number[]} */
     const backendNodeIds = [];
     for (const raw of Array.isArray(nodes) ? nodes : []) {
@@ -692,7 +705,7 @@ export class CdpAdapter {
       const hit =
         match === "contains"
           ? name !== null && sanitizeLabel(name, MAX_VALUE_LENGTH).includes(wanted)
-          : paragraphEqual(name, text);
+          : paragraphEqual(name, text) || paragraphEqual(paragraphText(raw), text);
       if (hit) backendNodeIds.push(node.backendNodeId);
     }
     return { count: backendNodeIds.length, backendNodeIds };

@@ -374,9 +374,12 @@ ${decoys}
     });
     send.addEventListener("click", function () {
       var li = document.createElement("li");
-      var p = document.createElement("p");
-      p.textContent = composer.textContent;
-      li.appendChild(p);
+      composer.innerText.split("\\n").forEach(function (line) {
+        var p = document.createElement("p");
+        p.setAttribute("aria-label", line);
+        p.textContent = line;
+        li.appendChild(p);
+      });
       messages.appendChild(li);
       composer.textContent = "";
       send.disabled = true;
