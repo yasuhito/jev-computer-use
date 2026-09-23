@@ -19,7 +19,7 @@ import { validateRequest, ValidationError, isPlainObject } from "./validate.mjs"
 import { buildRequest, runDecision } from "./decide.mjs";
 import { applyPolicy } from "./policy.mjs";
 import { RefusalError } from "./errors.mjs";
-import { urlReached, sameUrl, editorValueIsEmpty, paragraphEqual } from "./cdp/adapter.mjs";
+import { urlReached, sameUrl, assertFreshCandidate, editorValueIsEmpty, paragraphEqual } from "./cdp/adapter.mjs";
 
 /** @typedef {import("./cdp/adapter.mjs").CdpAdapter} CdpAdapter */
 /** @typedef {import("./cdp/adapter.mjs").Snapshot} Snapshot */
@@ -394,11 +394,12 @@ export async function runWorkflow({
       if (fresh.target.id !== first.target.id || !sameUrl(fresh.target.url, destinationUrl)) {
         throw new RefusalError("changed_state", "page changed since the destination decision");
       }
+      const candidate = assertFreshCandidate(first, fresh, chosenDestination);
       report.steps.push({
         step: "destination",
         phase: "verify",
-        candidateId: chosenDestination.id,
-        backendNodeId: chosenDestination.backendNodeId,
+        candidateId: candidate.id,
+        backendNodeId: candidate.backendNodeId,
         alreadyAtDestination: true,
         url: fresh.target.url,
         verified: true,

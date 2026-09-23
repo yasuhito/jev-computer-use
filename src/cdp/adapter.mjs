@@ -290,6 +290,32 @@ export function sameUrl(a, b) {
 }
 
 /**
+ * @param {Snapshot} snapshot
+ * @param {Snapshot} fresh
+ * @param {Candidate} decided
+ * @returns {Candidate}
+ */
+export function assertFreshCandidate(snapshot, fresh, decided) {
+  if (fresh.digest !== snapshot.digest) {
+    throw new RefusalError("changed_state", "the recognized candidates changed since the decision", {
+      before: snapshot.candidates.length,
+      after: fresh.candidates.length,
+    });
+  }
+  const candidate = fresh.candidates.find((c) => c.backendNodeId === decided.backendNodeId);
+  if (
+    !candidate ||
+    candidate.role !== decided.role ||
+    candidate.name !== decided.name ||
+    candidate.url !== decided.url ||
+    candidate.kind !== decided.kind
+  ) {
+    throw new RefusalError("changed_state", `element ${decided.backendNodeId} no longer matches the decided candidate`);
+  }
+  return candidate;
+}
+
+/**
  * @param {unknown} node
  * @param {Set<number>} into
  */
@@ -492,22 +518,7 @@ export class CdpAdapter {
     if (fresh.target.url !== snapshot.target.url) {
       throw new RefusalError("changed_state", `page URL changed from ${snapshot.target.url} to ${fresh.target.url}`);
     }
-    if (fresh.digest !== snapshot.digest) {
-      throw new RefusalError("changed_state", "the recognized candidates changed since the decision", {
-        before: snapshot.candidates.length,
-        after: fresh.candidates.length,
-      });
-    }
-    const candidate = fresh.candidates.find((c) => c.backendNodeId === decided.backendNodeId);
-    if (
-      !candidate ||
-      candidate.role !== decided.role ||
-      candidate.name !== decided.name ||
-      candidate.url !== decided.url ||
-      candidate.kind !== decided.kind
-    ) {
-      throw new RefusalError("changed_state", `element ${decided.backendNodeId} no longer matches the decided candidate`);
-    }
+    const candidate = assertFreshCandidate(snapshot, fresh, decided);
     if (candidate.disabled) {
       throw new RefusalError("not_actionable", `${candidate.label} is disabled`);
     }
