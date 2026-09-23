@@ -671,6 +671,22 @@ test("send mode on the real-shaped page already at the decided channel skips the
   assert.equal(env.fake.clicks().length, 2);
 });
 
+test("an already selected channel that changes during the destination decision refuses before input", async () => {
+  for (const mode of ["navigate", "draft", "send"]) {
+    const env = setup({ ...treeShape(), startPath: "/client/T0SYNTH/C0QA2" });
+    const decide = decideByLabel(TREE_FLOW, {
+      onCall: (index) => {
+        if (index === 0) env.fake.state.path = "/client/T0SYNTH/C0GENERAL";
+      },
+    });
+    const report = await run(env, { mode, destination: "qa2", text: TEXT, decide, exactDestination: true, duplicateMarker: "QA2 daily" });
+    assert.equal(report.status, "refused");
+    assert.equal(report.refusal?.code, "changed_state");
+    assert.equal(report.completed, null);
+    assertNoInput(env.fake);
+  }
+});
+
 test("a popover over the decided row still refuses the navigation click when the page is elsewhere", async () => {
   const env = setup(treeShape());
   coverSidebarWithPopover(env.fake);

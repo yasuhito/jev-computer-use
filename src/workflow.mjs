@@ -390,18 +390,17 @@ export async function runWorkflow({
     }
     assertAllowed(chosenDestination, "click", first);
     if (sameUrl(first.target.url, destinationUrl)) {
-      // The page already shows exactly the decided destination (its sidebar
-      // row is the selected one), which is the same URL proof a navigation
-      // click would have to reach, so no click is needed. Clicking anyway can
-      // be refused for a good reason: a popover may cover the selected row,
-      // and the hit test then resolves into the popover, not the row.
+      const fresh = await adapter.observe();
+      if (fresh.target.id !== first.target.id || !sameUrl(fresh.target.url, destinationUrl)) {
+        throw new RefusalError("changed_state", "page changed since the destination decision");
+      }
       report.steps.push({
         step: "destination",
         phase: "verify",
         candidateId: chosenDestination.id,
         backendNodeId: chosenDestination.backendNodeId,
         alreadyAtDestination: true,
-        url: first.target.url,
+        url: fresh.target.url,
         verified: true,
       });
     } else {
