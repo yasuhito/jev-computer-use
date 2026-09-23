@@ -672,7 +672,7 @@ test("send mode on the real-shaped page already at the decided channel skips the
 });
 
 test("an already selected channel that changes during the destination decision refuses before input", async () => {
-  for (const mode of ["navigate", "draft", "send"]) {
+  for (const mode of /** @type {const} */ (["navigate", "draft", "send"])) {
     const env = setup({ ...treeShape(), startPath: "/client/T0SYNTH/C0QA2" });
     const decide = decideByLabel(TREE_FLOW, {
       onCall: (index) => {
@@ -688,7 +688,7 @@ test("an already selected channel that changes during the destination decision r
 });
 
 test("an already selected channel renamed during the destination decision refuses before input", async () => {
-  for (const mode of ["navigate", "draft", "send"]) {
+  for (const mode of /** @type {const} */ (["navigate", "draft", "send"])) {
     const env = setup({ ...treeShape(), startPath: "/client/T0SYNTH/C0QA2" });
     const qa2 = env.fake.page.conversations.find((conversation) => conversation.id === "C0QA2");
     assert.ok(qa2);
