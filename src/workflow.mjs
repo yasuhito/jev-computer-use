@@ -216,7 +216,7 @@ function composerHolds(snapshot, composerBackendNodeId, text) {
  * @property {boolean} trusted
  * @property {number} threshold
  * @property {WorkflowStatus} status
- * @property {"navigate"|"draft"|"send"|null} completed last action stage that ran
+ * @property {"navigate"|"draft"|"send"|null} completed last workflow stage completed
  * @property {{id: string, url: string, title: string}|null} target
  * @property {{requested: string, candidate: ReturnType<typeof publicCandidate>|null}} destination
  * @property {string|null} text

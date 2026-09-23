@@ -222,6 +222,11 @@ profile already recognized, followed by deterministic validation in code.
   URL, digest, and the selected element's role, name, and URL are unchanged,
   the snapshot is younger than 20 s, the element is enabled with a box inside
   the viewport, and a hit test at the click point resolves to that element.
+  When already at the destination's exact URL, navigation instead re-observes
+  and requires the same target id, URL, candidate digest, and chosen destination
+  identity before verifying without a click. A changed page or candidate refuses
+  before typing or sending. Click hit testing still applies when navigation
+  needs a click.
   Before typing it additionally requires the page to be at the selected
   destination and the composer to be empty (an absent value, `""`, or exactly
   one newline U+000A counts as empty because Chromium reports that newline for
@@ -328,7 +333,7 @@ environment only. The live CDP transport uses the runtime's global WebSocket
 
 One JSON object per run. `status` is one of `observed`, `selected` (dry-run),
 `no_match`, `escalate`, `refused`, `executed`, `unverified`, or `error`.
-`completed` names the last action stage that ran (`navigate`, `draft`, `send`,
+`completed` names the last workflow stage completed (`navigate`, `draft`, `send`,
 or null). `steps` lists every decision (`phase: "decide"`, with the Jev choice,
 confidence, and probabilities), every action (`phase: "act"`, with the click
 point, URLs, and read-back), the post verification, and in dry-run a `plan`.
