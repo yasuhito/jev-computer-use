@@ -10,7 +10,8 @@
  * Modes, in increasing authority:
  *   observe   snapshot only, no model call, no action
  *   dry-run   decisions only, no action (default)
- *   navigate  click the destination and verify the URL
+ *   navigate  click the destination (unless the page is already exactly
+ *             there) and verify the URL
  *   draft     navigate, then insert the text and verify the read-back
  *   send      draft, then click send and verify the message appeared
  */
@@ -18,7 +19,7 @@ import { validateRequest, ValidationError, isPlainObject } from "./validate.mjs"
 import { buildRequest, runDecision } from "./decide.mjs";
 import { applyPolicy } from "./policy.mjs";
 import { RefusalError } from "./errors.mjs";
-import { urlReached, editorValueIsEmpty, paragraphEqual } from "./cdp/adapter.mjs";
+import { urlReached, sameUrl, assertFreshCandidate, editorValueIsEmpty, paragraphEqual } from "./cdp/adapter.mjs";
 
 /** @typedef {import("./cdp/adapter.mjs").CdpAdapter} CdpAdapter */
 /** @typedef {import("./cdp/adapter.mjs").Snapshot} Snapshot */
@@ -215,7 +216,7 @@ function composerHolds(snapshot, composerBackendNodeId, text) {
  * @property {boolean} trusted
  * @property {number} threshold
  * @property {WorkflowStatus} status
- * @property {"navigate"|"draft"|"send"|null} completed last action stage that ran
+ * @property {"navigate"|"draft"|"send"|null} completed last workflow stage completed
  * @property {{id: string, url: string, title: string}|null} target
  * @property {{requested: string, candidate: ReturnType<typeof publicCandidate>|null}} destination
  * @property {string|null} text
@@ -388,13 +389,31 @@ export async function runWorkflow({
       throw new RefusalError("untrusted_profile", `profile ${profile.name} only observes; execution modes need a trusted profile`);
     }
     assertAllowed(chosenDestination, "click", first);
-    const navigated = await adapter.click(first, chosenDestination.id, { expectUrl: destinationUrl });
-    report.steps.push({ step: "destination", phase: "act", ...navigated });
-    report.completed = "navigate";
-    if (!navigated.verified) {
-      report.status = "unverified";
-      return report;
+    if (sameUrl(first.target.url, destinationUrl)) {
+      const fresh = await adapter.observe();
+      if (fresh.target.id !== first.target.id || !sameUrl(fresh.target.url, destinationUrl)) {
+        throw new RefusalError("changed_state", "page changed since the destination decision");
+      }
+      const candidate = assertFreshCandidate(first, fresh, chosenDestination);
+      report.steps.push({
+        step: "destination",
+        phase: "verify",
+        candidateId: candidate.id,
+        backendNodeId: candidate.backendNodeId,
+        alreadyAtDestination: true,
+        url: fresh.target.url,
+        verified: true,
+      });
+    } else {
+      const navigated = await adapter.click(first, chosenDestination.id, { expectUrl: destinationUrl });
+      report.steps.push({ step: "destination", phase: "act", ...navigated });
+      report.completed = "navigate";
+      if (!navigated.verified) {
+        report.status = "unverified";
+        return report;
+      }
     }
+    report.completed = "navigate";
     if (mode === "navigate") {
       report.status = "executed";
       return report;
