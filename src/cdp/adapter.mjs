@@ -278,6 +278,18 @@ export function urlReached(actual, expected) {
 }
 
 /**
+ * Whether two URLs name exactly the same page (trailing slashes aside),
+ * unlike urlReached, which also accepts deeper paths under the expected one.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+export function sameUrl(a, b) {
+  return normalizeUrl(a) === normalizeUrl(b);
+}
+
+/**
  * @param {unknown} node
  * @param {Set<number>} into
  */

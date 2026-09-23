@@ -476,7 +476,7 @@ test("after a split-paragraph send that failed to verify, a rerun still refuses 
   assert.equal(again.status, "refused");
   assert.equal(again.refusal?.code, "duplicate_post");
   assert.deepEqual(env.fake.currentMessages(), [REPORT_TEXT], "nothing is posted twice");
-  assert.equal(env.fake.clicks().length, 4, "the first send's three clicks plus the rerun's destination click");
+  assert.equal(env.fake.clicks().length, 3, "the first send's three clicks; the rerun is already at the destination and clicks nothing");
 });
 
 test("send mode verifies split paragraphs only for the exact sequence: missing, reordered, altered, or extra non-empty paragraphs stay unverified", async () => {
@@ -634,6 +634,69 @@ test("send mode on the real-shaped page drafts through the localized composer an
   const again = await run(env, { mode: "send", destination: "qa2", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
   assert.equal(again.status, "refused");
   assert.equal(again.refusal?.code, "duplicate_post");
+});
+
+/**
+ * The real client can open a popover over the sidebar (the DM peek card): a
+ * hit test at any channel row's click point then resolves to a DM entry
+ * inside the popover, outside the row's subtree.
+ *
+ * @param {ReturnType<typeof createFakeCdp>} fake
+ */
+function coverSidebarWithPopover(fake) {
+  fake.state.extraElements.push({ key: "popover:dm", role: "paragraph", name: "", text: "Alice: see you tomorrow", href: null, value: null, disabled: false, attributes: {} });
+  const rows = new Set(fake.page.conversations.map((c) => fake.idFor(`sidebar:${c.id}`)));
+  const dmEntry = fake.idFor("popover:dm");
+  fake.state.hitTestOverride = (_x, _y, id) => (id !== null && rows.has(id) ? dmEntry : id);
+}
+
+test("send mode on the real-shaped page already at the decided channel skips the covered row and posts once", async () => {
+  const env = setup({ ...treeShape(), startPath: "/client/T0SYNTH/C0QA2" });
+  coverSidebarWithPopover(env.fake);
+  const report = await run(env, { mode: "send", destination: "qa2", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
+  assert.deepEqual(env.fake.currentMessages(), [TEXT]);
+  assert.equal(env.fake.currentUrl(), TREE_QA2);
+  // composer and send only: the selected row is never clicked
+  assert.equal(env.fake.clicks().length, 2);
+  assert.deepEqual(env.fake.state.sideEffects, []);
+  const destinationStep = /** @type {Record<string, unknown>|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "destination" && /** @type {{phase: string}} */ (s).phase !== "decide"));
+  assert.equal(destinationStep?.phase, "verify");
+  assert.equal(destinationStep?.alreadyAtDestination, true);
+  assert.equal(destinationStep?.url, TREE_QA2);
+  const again = await run(env, { mode: "send", destination: "qa2", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
+  assert.equal(again.status, "refused");
+  assert.equal(again.refusal?.code, "duplicate_post");
+  assert.equal(env.fake.clicks().length, 2);
+});
+
+test("a popover over the decided row still refuses the navigation click when the page is elsewhere", async () => {
+  const env = setup(treeShape());
+  coverSidebarWithPopover(env.fake);
+  const report = await run(env, { mode: "send", destination: "qa2", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "ambiguous_identity");
+  assert.equal(report.completed, null);
+  assert.equal(env.fake.currentUrl(), "https://app.slack.com/client/T0SYNTH/C0GENERAL");
+  assertNoInput(env.fake);
+});
+
+test("only the exact destination URL skips the navigation click; a page under it still clicks the row", async () => {
+  const env = setup({ ...treeShape(), startPath: "/client/T0SYNTH/C0QA2/thread/C0QA2-1" });
+  coverSidebarWithPopover(env.fake);
+  const report = await run(env, { mode: "navigate", destination: "qa2", exactDestination: true, decide: decideByLabel(TREE_FLOW) });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "ambiguous_identity");
+  assertNoInput(env.fake);
+});
+
+test("already at the decided channel, a wrong-name destination is still refused before any input", async () => {
+  const env = setup({ ...treeShape(), startPath: "/client/T0SYNTH/C0QA2" });
+  const report = await run(env, { mode: "send", destination: "qa2-wrong", text: TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: "QA2 daily" });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "destination_mismatch");
+  assertNoInput(env.fake);
 });
 
 test("on the real-shaped page a renamed row or a row whose key changed refuses before the click", async () => {

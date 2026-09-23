@@ -10,7 +10,8 @@
  * Modes, in increasing authority:
  *   observe   snapshot only, no model call, no action
  *   dry-run   decisions only, no action (default)
- *   navigate  click the destination and verify the URL
+ *   navigate  click the destination (unless the page is already exactly
+ *             there) and verify the URL
  *   draft     navigate, then insert the text and verify the read-back
  *   send      draft, then click send and verify the message appeared
  */
@@ -18,7 +19,7 @@ import { validateRequest, ValidationError, isPlainObject } from "./validate.mjs"
 import { buildRequest, runDecision } from "./decide.mjs";
 import { applyPolicy } from "./policy.mjs";
 import { RefusalError } from "./errors.mjs";
-import { urlReached, editorValueIsEmpty, paragraphEqual } from "./cdp/adapter.mjs";
+import { urlReached, sameUrl, editorValueIsEmpty, paragraphEqual } from "./cdp/adapter.mjs";
 
 /** @typedef {import("./cdp/adapter.mjs").CdpAdapter} CdpAdapter */
 /** @typedef {import("./cdp/adapter.mjs").Snapshot} Snapshot */
@@ -388,13 +389,31 @@ export async function runWorkflow({
       throw new RefusalError("untrusted_profile", `profile ${profile.name} only observes; execution modes need a trusted profile`);
     }
     assertAllowed(chosenDestination, "click", first);
-    const navigated = await adapter.click(first, chosenDestination.id, { expectUrl: destinationUrl });
-    report.steps.push({ step: "destination", phase: "act", ...navigated });
-    report.completed = "navigate";
-    if (!navigated.verified) {
-      report.status = "unverified";
-      return report;
+    if (sameUrl(first.target.url, destinationUrl)) {
+      // The page already shows exactly the decided destination (its sidebar
+      // row is the selected one), which is the same URL proof a navigation
+      // click would have to reach, so no click is needed. Clicking anyway can
+      // be refused for a good reason: a popover may cover the selected row,
+      // and the hit test then resolves into the popover, not the row.
+      report.steps.push({
+        step: "destination",
+        phase: "verify",
+        candidateId: chosenDestination.id,
+        backendNodeId: chosenDestination.backendNodeId,
+        alreadyAtDestination: true,
+        url: first.target.url,
+        verified: true,
+      });
+    } else {
+      const navigated = await adapter.click(first, chosenDestination.id, { expectUrl: destinationUrl });
+      report.steps.push({ step: "destination", phase: "act", ...navigated });
+      report.completed = "navigate";
+      if (!navigated.verified) {
+        report.status = "unverified";
+        return report;
+      }
     }
+    report.completed = "navigate";
     if (mode === "navigate") {
       report.status = "executed";
       return report;

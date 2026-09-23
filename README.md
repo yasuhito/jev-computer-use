@@ -279,7 +279,7 @@ profile already recognized, followed by deterministic validation in code.
 | --- | --- | --- |
 | `observe` | none | none; prints the recognized candidates |
 | `dry-run` (default) | destination; composer and send if visible | none; prints the plan and whether it would be executable |
-| `navigate` | destination | one click on the destination, URL verified |
+| `navigate` | destination | one click on the destination, URL verified; no click when the page URL already equals the destination's exactly |
 | `draft` | destination, composer | navigate, then one focus click and one `insertText`, read-back verified; never sends |
 | `send` | destination, composer, send | draft, then one click on the send control, post verified |
 
@@ -332,6 +332,9 @@ One JSON object per run. `status` is one of `observed`, `selected` (dry-run),
 or null). `steps` lists every decision (`phase: "decide"`, with the Jev choice,
 confidence, and probabilities), every action (`phase: "act"`, with the click
 point, URLs, and read-back), the post verification, and in dry-run a `plan`.
+When the page was already exactly at the destination, the destination step is
+`phase: "verify"` with `alreadyAtDestination: true` instead of a click (the
+selected row can sit under a popover, where the hit test rightly refuses).
 `refusal.code` is one of:
 
 | Code | Meaning |
