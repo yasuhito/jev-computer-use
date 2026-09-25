@@ -15,7 +15,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CdpAdapter } from "../src/cdp/adapter.mjs";
@@ -30,6 +30,7 @@ const SKIP = !CHROME ? "set JEV_CU_E2E_CHROME to a Chromium binary to run" : typ
 
 const SELF_DM_NAME = "Yasuhito Takamiya (自分)";
 const SELF_DM_FLOW = [/^Yasuhito Takamiya \(自分\) \[self direct message\]$/, /^Yasuhito Takamiya \(自分\) へのメッセージ$/, /^メッセージを送信$/];
+const QA2_FLOW = [/^qa2 \[channel\]$/, /^qa2 へのメッセージ$/, /^メッセージを送信$/];
 /** The approved four-line QA² layout with synthetic numbers. */
 const EMOJI_REPORT = [
   "QA² 新規ユーザー｜9/24（UTC）",
@@ -43,6 +44,10 @@ const MARKERS = ["QA² 新規ユーザー｜9/24（UTC）", "unity-new-users:246
 function page() {
   const synthetic = loadSyntheticPage({ shape: "tree" });
   synthetic.conversations = synthetic.conversations.filter((c) => c.kind === "channel");
+  const qa2 = synthetic.conversations.find((c) => c.id === "C0QA2METRICS");
+  assert.ok(qa2);
+  qa2.id = "C0QA2";
+  qa2.name = "qa2";
   synthetic.conversations.push({ id: "C0SAME", name: SELF_DM_NAME, kind: "channel" });
   synthetic.conversations.push({ id: "D0SELF", name: SELF_DM_NAME, kind: "dm" });
   return synthetic;
@@ -174,6 +179,32 @@ test("real Chromium: accessibility text alone refuses the emoji report before th
   }
 });
 
+test("real Chromium: the four-line emoji report posts to the exact qa2 channel", { skip: SKIP }, async () => {
+  const { session, cleanup } = await launch();
+  try {
+    const report = await runWorkflow({
+      mode: "send",
+      destination: "qa2",
+      text: EMOJI_REPORT,
+      adapter: adapterFor(session, SLACK_LOCAL_SYNTHETIC_PROFILE),
+      decide: decideByLabel(QA2_FLOW),
+      maxCandidates: 40,
+      exactDestination: true,
+      duplicateMarker: MARKERS,
+    });
+    assert.equal(report.status, "executed", JSON.stringify(report.refusal));
+    assert.match(report.destination.candidate?.url ?? "", /\/client\/T0SYNTH\/C0QA2$/);
+    assert.equal((await renderedMessages(session)).length, 1);
+    assert.equal((await renderedMessages(session))[0]?.split("\n").length, 4);
+    if (process.env.JEV_CU_E2E_QA2_SCREENSHOT) {
+      const { data } = await session.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
+      await writeFile(process.env.JEV_CU_E2E_QA2_SCREENSHOT, Buffer.from(data, "base64"));
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 test("real Chromium: the emoji report posts once to the self-DM in the approved four-line layout and a rerun refuses", { skip: SKIP }, async () => {
   const { session, cleanup } = await launch();
   try {
@@ -195,10 +226,45 @@ test("real Chromium: the emoji report posts once to the self-DM in the approved 
         "[:date:] 直近7日（9/18→9/24）：1,300 → 1,220 → 1,185 → 1,160 → 1,205 → 1,178 → 1,234人",
       ].join("\n"),
     ]);
+    const { result: attributes } = await session.send("Runtime.evaluate", {
+      returnByValue: true,
+      expression: `Array.from(document.querySelectorAll("#messages img[data-stringify-type='emoji']")).map(function (img) {
+        return [img.getAttribute("data-stringify-emoji"), img.getAttribute("alt")];
+      })`,
+    });
+    assert.deepEqual(attributes.value, [
+      [":bust_in_silhouette:", ":上半身シルエット_1:"],
+      [":scales:", ":天秤:"],
+      [":date:", ":日付:"],
+    ]);
+    if (process.env.JEV_CU_E2E_SCREENSHOT) {
+      const { data } = await session.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
+      await writeFile(process.env.JEV_CU_E2E_SCREENSHOT, Buffer.from(data, "base64"));
+    }
+    await session.send("Runtime.evaluate", {
+      expression: `document.querySelector("#messages img[data-stringify-emoji=':scales:']").setAttribute("data-stringify-emoji", ":unknown:")`,
+    });
+    const changedIdentityMatches = (await adapter.findText(EMOJI_REPORT, { match: "sequence" })).count;
+    assert.equal(changedIdentityMatches, 0);
+    await session.send("Runtime.evaluate", {
+      expression: `document.querySelector("#messages img[data-stringify-emoji=':unknown:']").setAttribute("data-stringify-emoji", ":scales:")`,
+    });
     const again = await send(adapterFor(session, SLACK_LOCAL_SYNTHETIC_PROFILE));
     assert.equal(again.status, "refused");
     assert.equal(again.refusal?.code, "duplicate_post");
     assert.equal((await renderedMessages(session)).length, 1);
+    if (process.env.JEV_CU_E2E_EVIDENCE) {
+      await writeFile(process.env.JEV_CU_E2E_EVIDENCE, JSON.stringify({
+        sendStatus: report.status,
+        verified: posted?.verified,
+        destinationUrl: report.destination.candidate?.url,
+        renderedMessages: await renderedMessages(session),
+        postedEmojiAttributes: attributes.value,
+        changedIdentityMatches,
+        rerunStatus: again.status,
+        rerunRefusal: again.refusal?.code,
+      }, null, 2) + "\n");
+    }
   } finally {
     await cleanup();
   }

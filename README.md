@@ -443,9 +443,9 @@ comparison handles. The safety comparisons are paragraph-aware for exactly
 this reason. Both the fake and the served page also turn the emoji of
 `SYNTHETIC_EMOJI` into images the way Slack does (an empty-`alt` image with
 `data-id`/`data-stringify-text` in the composer, a `data-stringify-emoji`
-image with the ja-JP localized `alt` in a posted rich-text section), so the composer's accessibility value
-lacks them and only the proven DOM reading verifies; `👥` is a counterexample
-the profile cannot prove.
+image with the ja-JP localized `alt` in a posted rich-text section), so the
+composer's accessibility value lacks them and only the proven DOM reading
+verifies; `👥` is a counterexample the profile cannot prove.
 
 `test/browser-e2e.test.mjs` runs the send workflow against the served
 `tree` page with the self-DM in a real headless Chromium (localhost only,

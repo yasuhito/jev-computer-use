@@ -338,7 +338,7 @@ test("slack emoji images are proven only from agreeing identity signals in the c
   const asset = (/** @type {string} */ file) => `https://a.slack-edge.com/production-standard-emoji-assets/15.0/google-medium/${file}.png`;
   // The composer shape: empty alt, shortcode in data attributes.
   assert.equal(text({ alt: "", src: asset("1f464"), "data-id": ":bust_in_silhouette:", "data-stringify-text": ":bust_in_silhouette:" }), "👤");
-  // The posted-message shape: shortcode alt, descriptive aria-label.
+  // An ASCII-alt posted-message variant: shortcode alt, descriptive aria-label.
   assert.equal(text({ alt: ":scales:", "aria-label": "scales emoji", "data-stringify-type": "emoji", "data-stringify-emoji": ":scales:", src: asset("2696-fe0f") }), "⚖️");
   assert.equal(text({ "data-stringify-emoji": ":date:" }, "SPAN"), "📅");
   // Unproven: nothing, disagreement, other emoji, custom or combined shortcodes.
