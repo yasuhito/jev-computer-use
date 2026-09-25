@@ -406,6 +406,57 @@ test("slack emoji images skip a ja-JP localized alt only beside a proven emoji t
   assert.equal(text({ alt: ":天秤:" }, "SPAN"), undefined);
 });
 
+test("slack composer emoji images skip a ja-JP spoken alt only beside an agreeing data-id and data-stringify-text", () => {
+  /** @param {Record<string, string>} attributes @param {string} [nodeName] */
+  const text = (attributes, nodeName = "IMG") => slackEmojiText({ nodeName, attributes });
+  /** The composer attributes observed on the real ja-JP client, 2026-09-25 (asset path shortened). */
+  const composer = (/** @type {string} */ code, /** @type {string} */ alt, /** @type {string} */ title = ":天秤:") => ({
+    class: "emoji",
+    "data-id": code,
+    "data-stringify-text": code,
+    "data-title": title,
+    alt,
+    style: "background-image: url(https://a.slack-edge.com/production-standard-emoji-assets/15.0/google-medium/2696-fe0f.png)",
+  });
+  // Trigger: the spoken alt. Each QA² emoji is proven from its typed shortcode pair.
+  assert.equal(text(composer(":scales:", "天秤 絵文字")), "⚖️");
+  assert.equal(text(composer(":bust_in_silhouette:", "上半身シルエット_1 絵文字", ":上半身シルエット_1:")), "👤");
+  assert.equal(text(composer(":date:", "日付 絵文字", ":日付:")), "📅");
+  // Contrast: an empty or agreeing ASCII shortcode alt behaves as before.
+  assert.equal(text(composer(":scales:", "")), "⚖️");
+  assert.equal(text(composer(":scales:", ":scales:")), "⚖️");
+  assert.equal(text(composer(":scales:", ":date:")), null);
+  // Unobserved ASCII spoken labels stay identity fields and are refused.
+  assert.equal(text(composer(":scales:", "scales emoji")), null);
+  // The typed pair must be present, known, and exactly equal.
+  const { "data-stringify-text": _text, ...noText } = composer(":scales:", "天秤 絵文字");
+  assert.equal(text(noText), null);
+  const { "data-id": _id, ...noId } = composer(":scales:", "天秤 絵文字");
+  assert.equal(text(noId), null);
+  assert.equal(text({ ...composer(":scales:", "天秤 絵文字"), "data-stringify-text": ":date:" }), null);
+  assert.equal(text({ ...composer(":scales:", "天秤 絵文字"), "data-stringify-text": "" }), null);
+  assert.equal(text(composer(":busts_in_silhouette:", "上半身シルエット_2 絵文字")), null);
+  assert.equal(text(composer(":qa2_logo:", "天秤 絵文字")), null);
+  assert.equal(text(composer(":scales::skin-tone-2:", "天秤 絵文字")), null);
+  assert.equal(text(composer("天秤", "天秤 絵文字")), null);
+  // Another identity field must still agree with the pair.
+  assert.equal(text({ ...composer(":scales:", "天秤 絵文字"), "data-stringify-emoji": ":date:" }), null);
+  // Neither the label, the title, nor the asset is identity: they never prove or veto an emoji.
+  assert.equal(text(composer(":date:", "天秤 絵文字")), "📅");
+  assert.equal(text(composer(":scales:", "天秤 絵文字", ":日付:")), "⚖️");
+  assert.equal(text({ alt: "天秤 絵文字", "data-title": ":天秤:", style: "background-image: url(x/2696-fe0f.png)" }), null);
+  // Only a spoken label of words is skipped, never an emoji character, a shortcode, or a mixed shape.
+  assert.equal(text(composer(":scales:", "⚖️")), null);
+  assert.equal(text(composer(":scales:", "⚖️ 絵文字")), null);
+  assert.equal(text(composer(":scales:", "天秤 :date:")), null);
+  assert.equal(text(composer(":scales:", "天秤  絵文字")), null);
+  assert.equal(text(composer(":scales:", " 天秤 絵文字")), null);
+  assert.equal(text(composer(":scales:", "天秤\n絵文字")), null);
+  // The composer rule is for images only.
+  assert.equal(text(composer(":scales:", "天秤 絵文字"), "SPAN"), undefined);
+  assert.equal(text({ ...composer(":scales:", "天秤 絵文字"), "data-stringify-type": "emoji" }, "SPAN"), null);
+});
+
 test("DOM text uses only the supplied profile's inline element proof", () => {
   const root = { nodeType: 1, nodeName: "SPAN", children: [{ nodeType: 1, nodeName: "IMG", attributes: ["data-id", ":bust_in_silhouette:"] }] };
   assert.deepEqual(domText(root, slackEmojiText), { text: "👤", plain: "", replaced: 1, unresolved: 0 });

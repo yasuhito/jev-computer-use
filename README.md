@@ -291,17 +291,27 @@ profile already recognized, followed by deterministic validation in code.
   No signal, disagreeing signals, an
   unknown, custom, or skin-tone shortcode, or another emoji is unproven and
   refuses (or leaves the post `unverified`); a missing, extra, changed, or
-  moved emoji is a text difference like any other. The one exception is a
-  localized `alt`: the ja-JP client posts
+  moved emoji is a text difference like any other. The exception is a
+  localized `alt`, in two observed shapes. The ja-JP client posts
   `<img data-stringify-type="emoji" data-stringify-emoji=":scales:" alt=":天秤:">`
   (observed read-only on 2026-09-25), so a colon-wrapped `alt` of letters,
   digits, and shortcode punctuation with at least one non-ASCII character is
   skipped, not treated as an identity field, only when the element also
   carries `data-stringify-type="emoji"` and a `data-stringify-emoji` in
   `SLACK_EMOJI`. An ASCII `alt` is still an identity field that must agree,
-  and a localized `alt` without that stable identity proves nothing. This is
-  proven against posted-message attributes only; how the live ja-JP composer
-  renders its emoji images has not been observed.
+  and a localized `alt` without that stable identity proves nothing. Its
+  composer instead drafts
+  `<img class="emoji" data-id=":scales:" data-stringify-text=":scales:" data-title=":天秤:" alt="天秤 絵文字">`
+  (observed read-only on 2026-09-25, when the deployed 9ee0b41 matcher
+  refused that draft with `text_mismatch` before the send click), so a spoken `alt` of
+  space-separated words of letters, digits, and shortcode punctuation with at
+  least one non-ASCII character is skipped only on an `<img>` whose `data-id`
+  is in `SLACK_EMOJI` and whose `data-stringify-text` is exactly the same
+  shortcode. An emoji character, a shortcode, an ASCII label such as
+  `scales emoji`, `data-title`, and the asset never prove an emoji. Chromium
+  leaves such an `alt` out of the editable's accessibility value (checked in
+  `test/browser-e2e.test.mjs`); the live composer read-back with this rule is
+  not yet observed.
 - **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
   unless the requested name is exactly the leading name of the chosen
@@ -441,8 +451,8 @@ renders them in the message list, one element per paragraph
 (`splitMessages`), which is what the post verification's paragraph-sequence
 comparison handles. The safety comparisons are paragraph-aware for exactly
 this reason. Both the fake and the served page also turn the emoji of
-`SYNTHETIC_EMOJI` into images the way Slack does (an empty-`alt` image with
-`data-id`/`data-stringify-text` in the composer, a `data-stringify-emoji`
+`SYNTHETIC_EMOJI` into images the way Slack does (a spoken ja-JP `alt` image
+with `data-id`/`data-stringify-text` in the composer, a `data-stringify-emoji`
 image with the ja-JP localized `alt` in a posted rich-text section), so the
 composer's accessibility value lacks them and only the proven DOM reading
 verifies; `👥` is a counterexample the profile cannot prove.
@@ -451,7 +461,8 @@ verifies; `👥` is a counterexample the profile cannot prove.
 `tree` page with the self-DM in a real headless Chromium (localhost only,
 offline label decisions) and checks the 2026-09-25 refusal with
 accessibility text alone, the proven send and post verification, the rendered
-four-line layout, and the duplicate rerun. It is skipped unless
+four-line layout, the duplicate rerun, and refusal before the send click of
+a composer emoji whose typed shortcode pair is spoofed. It is skipped unless
 `JEV_CU_E2E_CHROME` names a Chromium binary (Node 22+):
 `JEV_CU_E2E_CHROME=$(command -v chromium) node --test test/browser-e2e.test.mjs`.
 
