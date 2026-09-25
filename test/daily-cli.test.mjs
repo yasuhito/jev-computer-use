@@ -114,8 +114,9 @@ test("the daily CLI posts once, records the date, and prints a scrubbed payload"
     assert.equal(messages.length, 1);
     const posted = messages[0];
     assert.ok(posted);
-    assert.match(posted, /^QA2 new users \(Live\) for 2026-09-20 \(UTC\)/);
-    assert.ok(posted.includes(KEY));
+    assert.match(posted, /^\*QA² 新規ユーザー｜9\/20（UTC）\*/);
+    assert.equal(posted.split("\n").length, 4);
+    assert.doesNotMatch(posted, new RegExp(KEY));
     assert.equal(fake.state.disconnected, true);
     // The daily payload itself carries no report data, message, destination, or key.
     const text = JSON.stringify(payload);
@@ -267,13 +268,14 @@ test("a retry after an unverified send hits the marker and still never records o
 test("a composer left holding an unposted draft is refused, never appended to", async () => {
   // Unattended fail-safe: after a swallowed send the composer still holds the
   // exact draft (Slack keeps per-channel drafts), so a later run refuses at
-  // insertText until a human clears it. The record stays unwritten. This
-  // draft carries yesterday's key, so the duplicate-marker check passes and
-  // the refusal comes from the composer guard itself.
+  // insertText until a human clears it. The record stays unwritten. The draft
+  // carries yesterday's title marker, so the duplicate check passes and the
+  // refusal comes from the composer guard itself.
   const sink = { write: () => {} };
   const probe = await runReportJob({ argv: [], executor: cExecutor, env: {}, now: cClock.now, sleep: cClock.sleep, stdout: sink, stderr: sink });
   const draft = /** @type {{message: unknown}} */ (probe.payload).message;
   assert.equal(typeof draft, "string");
+  const staleDraft = /** @type {string} */ (draft).replaceAll("9/20", "9/19");
   const c = await captureIo({
     extraArgv: ["--max-attempts", "2", "--retry-base-sec", "1"],
     decide: decideByLabel(sendFlow(2)),
@@ -282,7 +284,7 @@ test("a composer left holding an unposted draft is refused, never appended to", 
       if (c.sessions.length > 0) {
         // The retry reconnects to the same channel, whose composer still
         // holds the unposted draft from the first attempt.
-        fake.state.drafts.set("/client/T0SYNTH/C0QA2", /** @type {string} */ (draft).replaceAll("2026-09-20", "2026-09-19"));
+        fake.state.drafts.set("/client/T0SYNTH/C0QA2", staleDraft);
       } else {
         fake.state.posting = false; // the send click is swallowed; the draft stays
       }
@@ -298,7 +300,7 @@ test("a composer left holding an unposted draft is refused, never appended to", 
     assert.equal(payload?.attempts[1]?.refusalCode, "text_mismatch");
     const fake = c.sessions[1];
     assert.ok(fake);
-    assert.equal(fake.currentDraft(), /** @type {string} */ (draft).replaceAll("2026-09-20", "2026-09-19"));
+    assert.equal(fake.currentDraft(), staleDraft);
     assert.equal(fake.currentMessages().length, 0);
   } finally {
     await c.cleanup();

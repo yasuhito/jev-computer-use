@@ -569,19 +569,37 @@ test("exactDestination refuses before any click when the chosen link does not na
 test("duplicateMarker refuses when the rendered destination contains the marker, and is reported in the plan", async () => {
   const env = setup();
   env.fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", ["earlier post key: job-2026-09-20"]);
-  const report = await run(env, { mode: "send", text: TEXT, duplicateMarker: "job-2026-09-20" });
+  const report = await run(env, { mode: "send", text: TEXT, duplicateMarker: ["QA² 新規ユーザー｜9/20（UTC）", "job-2026-09-20"] });
   assert.equal(report.status, "refused");
   assert.equal(report.refusal?.code, "duplicate_post");
+  assert.equal(report.refusal?.details.marker, "job-2026-09-20");
   assert.equal(report.completed, "navigate");
   assert.equal(env.fake.methodCalls("Input.insertText").length, 0);
   assert.deepEqual(env.fake.currentMessages(), ["earlier post key: job-2026-09-20"]);
-  const step = /** @type {{step: string, found: number}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "duplicate"));
-  assert.equal(step?.found, 1);
+  const steps = report.steps.filter((s) => /** @type {{step: string}} */ (s).step === "duplicate");
+  assert.deepEqual(steps.map((s) => {
+    const step = /** @type {{marker: string, found: number}} */ (s);
+    return [step.marker, step.found];
+  }), [
+    ["QA² 新規ユーザー｜9/20（UTC）", 0],
+    ["job-2026-09-20", 1],
+  ]);
 
   const fresh = setup();
   const posted = await run(fresh, { mode: "send", text: TEXT, duplicateMarker: "job-2026-09-21" });
   assert.equal(posted.status, "executed");
   assert.deepEqual(fresh.fake.currentMessages(), [TEXT]);
+
+  const titleCopy = setup();
+  titleCopy.fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", ["*QA² 新規ユーザー｜9/20（UTC）*"]);
+  const titleRefusal = await run(titleCopy, {
+    mode: "send",
+    text: TEXT,
+    duplicateMarker: ["QA² 新規ユーザー｜9/20（UTC）", "job-2026-09-20"],
+  });
+  assert.equal(titleRefusal.status, "refused");
+  assert.equal(titleRefusal.refusal?.code, "duplicate_post");
+  assert.equal(titleCopy.fake.methodCalls("Input.insertText").length, 0);
 
   const plan = await run(setup(), { mode: "dry-run", text: TEXT, decide: decideByLabel([/^qa2-metrics/, /^Message #general/, /^Send now/]), exactDestination: true, duplicateMarker: "m" });
   const planStep = /** @type {{guards: object}|undefined} */ (plan.steps.find((s) => /** @type {{step: string}} */ (s).step === "plan"));

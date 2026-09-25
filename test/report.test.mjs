@@ -12,7 +12,7 @@ import {
   DataAccessError,
 } from "../src/unity/data-access.mjs";
 import { buildNewUsersReport, compare, classifyTrend, round, idempotencyKey, FLAT_BAND_PERCENT } from "../src/report/new-users.mjs";
-import { renderSlackMessage, formatNumber, formatDelta, formatPercent } from "../src/report/slack-message.mjs";
+import { renderSlackMessage, slackMessageDuplicateMarker, formatNumber, formatDelta, formatPercent } from "../src/report/slack-message.mjs";
 import { createFixtureExecutor, loadFixtureExecutor, assertReadOnlyStatement } from "../src/snowflake/executor.mjs";
 
 const FIXTURE_PATH = fileURLToPath(new URL("./fixtures/unity-data-access.json", import.meta.url));
@@ -24,9 +24,9 @@ const GAME = { accountName: "Synthetic Studio", gameName: "QA2", gameId: 24601, 
  * @param {Array<[string, number]>} points
  * @param {number} [days]
  */
-function reportFrom(points, days = 8) {
-  const window = completeUtcWindow(NOW, days);
-  return buildNewUsersReport({ game: GAME, window, rows: points.map(([date, newUsers]) => ({ date, newUsers })), generatedAt: "2026-09-21T09:00:00.000Z" });
+function reportFrom(points, days = 8, now = NOW) {
+  const window = completeUtcWindow(now, days);
+  return buildNewUsersReport({ game: GAME, window, rows: points.map(([date, newUsers]) => ({ date, newUsers })), generatedAt: new Date(now).toISOString() });
 }
 
 /* ----------------------------- dates ----------------------------- */
@@ -202,29 +202,57 @@ test("the report builder rejects rows outside its window and inconsistent window
 
 /* ----------------------------- message ----------------------------- */
 
-test("the Slack message is deterministic plain text carrying the date, count, comparisons, series, and key", async () => {
-  const executor = await loadFixtureExecutor(FIXTURE_PATH);
-  const game = await resolveGameEnvironment(executor);
-  const window = completeUtcWindow(NOW, 14);
-  const rows = await fetchNewUsersByStartDate(executor, { gameId: game.gameId, environmentId: game.environmentId, start: window.start, end: window.end });
-  const report = buildNewUsersReport({ game, window, rows, generatedAt: "2026-09-21T09:00:00.000Z" });
+test("the Slack message matches the approved four-line QA² example exactly", () => {
+  const report = reportFrom(
+    [
+      ["2026-09-17", 1],
+      ["2026-09-18", 2],
+      ["2026-09-19", 4],
+      ["2026-09-20", 3],
+      ["2026-09-21", 3],
+      ["2026-09-22", 1],
+      ["2026-09-23", 0],
+      ["2026-09-24", 1],
+    ],
+    8,
+    Date.parse("2026-09-25T09:00:00Z"),
+  );
   const message = renderSlackMessage(report);
   assert.equal(
     message,
     [
-      "QA2 new users (Live) for 2026-09-20 (UTC)",
-      "New users on 2026-09-20: 1,234",
-      "vs 2026-09-19 (1,178): +56 (+4.8%)",
-      "vs trailing 7-day avg 2026-09-13..2026-09-19 (1,035.4): +198.6 (+19.2%), trend: up",
-      "Last 7 days (UTC): 09-14 1,300 | 09-15 1,220 | 09-16 1,185 | 09-17 1,160 | 09-18 1,205 | 09-19 1,178 | 09-20 1,234",
-      "Days with no rows (counted as 0): 2026-09-13",
-      "Source: Unity Analytics Data Access (Snowflake) | key: unity-new-users:24601:31001:2026-09-20",
+      "*QA² 新規ユーザー｜9/24（UTC）*",
+      "👤 *1人*（前日より *+1人*）",
+      "⚖️ 直近7日平均 *2人* より *1人少なめ*（-50%）",
+      "📅 直近7日（9/18→9/24）：*2 → 4 → 3 → 3 → 1 → 0 → 1人*",
     ].join("\n"),
   );
   assert.equal(renderSlackMessage(report), message);
-  assert.match(renderSlackMessage(report, { seriesDays: 2 }), /Last 2 days \(UTC\): 09-19 1,178 \| 09-20 1,234/);
-  assert.throws(() => renderSlackMessage(report, { seriesDays: 15 }), /1\.\.14/);
-  assert.doesNotMatch(message, /<@|<#|https?:\/\//);
+  assert.equal(slackMessageDuplicateMarker(report), "QA² 新規ユーザー｜9/24（UTC）");
+  assert.equal(report.missingDates.length, 0);
+  assert.throws(() => renderSlackMessage(report, { seriesDays: 15 }), /1\.\.8/);
+  assert.doesNotMatch(message, /<@|<#|https?:\/\/|unity-new-users|Snowflake|no rows/i);
+});
+
+test("the Slack comparison copy preserves positive, equal, negative, and zero-baseline semantics", () => {
+  const now = Date.parse("2026-09-25T09:00:00Z");
+  /** @param {number} lastValue @returns {Array<[string, number]>} */
+  const points = (lastValue) => [
+    ["2026-09-17", 2],
+    ["2026-09-18", 2],
+    ["2026-09-19", 2],
+    ["2026-09-20", 2],
+    ["2026-09-21", 2],
+    ["2026-09-22", 2],
+    ["2026-09-23", 2],
+    ["2026-09-24", lastValue],
+  ];
+  assert.match(renderSlackMessage(reportFrom(points(3), 8, now)), /⚖️ 直近7日平均 \*2人\* より \*1人多め\*（\+50%）/);
+  assert.match(renderSlackMessage(reportFrom(points(2), 8, now)), /⚖️ 直近7日平均 \*2人\* と \*同じ\*（\+0%）/);
+  const zeroBaseline = renderSlackMessage(reportFrom([["2026-09-24", 1]], 8, now));
+  assert.match(zeroBaseline, /⚖️ 直近7日平均 \*0人\* より \*1人多め\*/);
+  assert.doesNotMatch(zeroBaseline.split("\n")[2] ?? "", /%/);
+  assert.match(zeroBaseline, /前日より \*\+1人\*/);
 });
 
 test("number formatting is locale-free and always signs deltas", () => {

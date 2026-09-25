@@ -32,7 +32,7 @@ import {
 } from "../src/unity/data-access.mjs";
 import { completeUtcWindow, DEFAULT_WINDOW_DAYS } from "../src/report/dates.mjs";
 import { buildNewUsersReport } from "../src/report/new-users.mjs";
-import { renderSlackMessage, DEFAULT_SERIES_DAYS } from "../src/report/slack-message.mjs";
+import { renderSlackMessage, slackMessageDuplicateMarker, DEFAULT_SERIES_DAYS } from "../src/report/slack-message.mjs";
 
 const TOOL = "jev-cu-report";
 const VERSION = "0.1.0";
@@ -304,6 +304,9 @@ export async function runReportJob({
     const rows = await fetchNewUsersByStartDate(source, { gameId: game.gameId, environmentId: game.environmentId, start: window.start, end: window.end });
     const report = buildNewUsersReport({ game, window, rows, generatedAt: new Date(clock).toISOString() });
     const message = validateMessageText(renderSlackMessage(report, { seriesDays: DEFAULT_SERIES_DAYS }));
+    // The first marker identifies the new four-line rendering. Keep the
+    // idempotency key too so a retry still recognizes posts made by older code.
+    const duplicateMarkers = [slackMessageDuplicateMarker(report), report.idempotencyKey];
 
     /** @type {Record<string, unknown>} */
     const base = {
@@ -317,7 +320,7 @@ export async function runReportJob({
         destination,
         allowlist: options.allowDestinations,
         exactDestination: true,
-        duplicateMarker: report.idempotencyKey,
+        duplicateMarker: duplicateMarkers,
       },
     };
     if (options.mode === "dry-run") {
@@ -344,7 +347,7 @@ export async function runReportJob({
       threshold: options.minConfidence,
       maxCandidates: options.maxCandidates,
       exactDestination: true,
-      duplicateMarker: report.idempotencyKey,
+      duplicateMarker: duplicateMarkers,
     });
     payload = { ...base, status: send.status, send };
     return { code: 0, payload };
