@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { SLACK_PROFILE, SLACK_LOCAL_SYNTHETIC_PROFILE, classifySlackTarget, sidebarChannelUrl } from "../src/profiles/slack.mjs";
+import { SLACK_PROFILE, SLACK_LOCAL_SYNTHETIC_PROFILE, SLACK_SELF_DM_NAME, classifySlackTarget, classifySlackSelfDmTarget, sidebarChannelUrl } from "../src/profiles/slack.mjs";
 import { PROFILES, DEFAULT_PROFILE_NAME } from "../src/profiles/index.mjs";
 import { ALLOWED_CDP_METHODS, CdpAdapter } from "../src/cdp/adapter.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
@@ -140,6 +140,67 @@ test("slack profile recognizes sidebar channel rows by their data-item-key and n
   // Unread badges and suffixes in the contents are decoration after the name.
   assert.equal(SLACK_PROFILE.recognize(row("C0QA2", "qa2 3"), SLACK)?.name, "qa2 3");
   assert.equal(sidebarChannelUrl(row("C0QA2", "qa2"), SLACK), QA2_URL);
+});
+
+test("slack profile recognizes only the exact self-DM name with an observed D identity", () => {
+  const selfName = SLACK_SELF_DM_NAME;
+  const selfUrl = "https://app.slack.com/client/T0SYNTH/D0SELF";
+  const selfRow = row("D0SELF", selfName);
+  assert.deepEqual(SLACK_PROFILE.recognize(selfRow, SLACK), {
+    kind: "destination",
+    label: `${selfName} [self direct message]`,
+    name: selfName,
+    url: selfUrl,
+  });
+  assert.deepEqual(classifySlackSelfDmTarget(selfUrl, SLACK.origin), {
+    team: "T0SYNTH",
+    conversation: "D0SELF",
+    kindLabel: "self direct message",
+  });
+  for (const [key, name] of /** @type {Array<[string, string]>} */ ([
+    ["D0ALICE", "Alice Example"],
+    ["D0OTHER", "Yasuhito Takamiya"],
+    ["D0COPY", `${selfName} copy`],
+    ["C0SAME", selfName],
+    ["G0TRIO", selfName],
+  ])) {
+    assert.equal(SLACK_PROFILE.recognize(row(key, name), SLACK), null, `${key} ${name}`);
+  }
+  for (const name of [selfName, `${selfName} (channel)`, `${selfName} 2`]) {
+    assert.equal(
+      SLACK_PROFILE.recognize(node({ name, url: "https://app.slack.com/client/T0SYNTH/C0SAME" }), SLACK),
+      null,
+      `same-name channel ${name}`,
+    );
+  }
+  for (const url of [
+    "https://app.slack.com/client/T0SYNTH/D0SELF?thread=1",
+    "https://example.com/client/T0SYNTH/D0SELF",
+    "https://app.slack.com/client/T0SYNTH/C0SELF",
+  ]) {
+    assert.equal(classifySlackSelfDmTarget(url, SLACK.origin), null, url);
+  }
+});
+
+test("the self-DM click permission binds the allowlisted row name, D key, team, and URL", () => {
+  const selfDm = candidate({
+    role: "treeitem",
+    name: SLACK_SELF_DM_NAME,
+    label: `${SLACK_SELF_DM_NAME} [self direct message]`,
+    url: "https://app.slack.com/client/T0SYNTH/D0SELF",
+    attributes: { "data-item-key": "D0SELF" },
+  });
+  assert.equal(SLACK_PROFILE.allowAction(selfDm, "click", SLACK).ok, true);
+  for (const changed of [
+    { ...selfDm, name: "Yasuhito Takamiya" },
+    { ...selfDm, attributes: { "data-item-key": "D0OTHER" } },
+    { ...selfDm, url: "https://app.slack.com/client/T0SYNTH/D0OTHER" },
+    { ...selfDm, attributes: {} },
+    { ...selfDm, role: "link" },
+  ]) {
+    assert.equal(SLACK_PROFILE.allowAction(changed, "click", SLACK).ok, false);
+  }
+  assert.equal(SLACK_PROFILE.allowAction(selfDm, "insertText", SLACK).ok, false);
 });
 
 test("slack profile never recognizes sidebar rows that are not channels of the current team page", () => {

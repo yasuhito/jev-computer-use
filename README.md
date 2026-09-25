@@ -204,18 +204,27 @@ profile already recognized, followed by deterministic validation in code.
   profile.
 - **Slack allowlist.** The Slack profile recognizes exactly three kinds:
   destinations (same-origin `https://app.slack.com/client/<team>/<C id>`
-  channel links with no query or fragment, or sidebar `treeitem` rows whose
-  `data-item-key` is a channel id on the page's team: the current Slack client
-  renders the sidebar as such rows with no link, wrapped in a `draggable`
-  element that makes Chromium leave the row's accessible name empty, so the
-  row's name comes from its visible contents and its URL from the key), the
-  composer (a `textbox` named `Message ...` or carrying Slack's
-  locale-independent `data-qa="texty_input"`), and the send control (a
-  `button` named `Send` or `Send now` or carrying `data-qa="texty_send_button"`,
-  only while enabled). It never recognizes, so the model is never offered and
-  no action can reach: direct messages, groups, sidebar sections, reactions,
-  uploads, downloads, deletion, external links, sign-in or sign-out, workspace
-  or account settings, search, threads, scheduling, or any other control.
+  channel links with no query or fragment, sidebar `treeitem` rows whose
+  `data-item-key` is a channel id on the page's team, and the single
+  allowlisted self-DM row), the composer (a `textbox` named `Message ...` or
+  carrying Slack's locale-independent `data-qa="texty_input"`), and the send
+  control (a `button` named `Send` or `Send now` or carrying
+  `data-qa="texty_send_button"`, only while enabled). The self-DM exception is
+  only a `treeitem` whose exact visible name is `Yasuhito Takamiya (自分)` and
+  whose `data-item-key` is a D id; its same-origin client URL is derived from
+  the observed D id and the current page's team, then bound by the same
+  freshness, URL, and click hit-test checks as channel rows. A same-name
+  channel, a decorated or similarly named person, any other D row, and D links
+  are not destinations. Duplicate exact-name D rows are refused as ambiguous,
+  and the existing `exactDestination` guard refuses a fallback candidate before
+  any click or typing. The current Slack client renders sidebar rows without
+  links, wrapped in a `draggable` element that makes Chromium leave the row's
+  accessible name empty, so the name comes from the row's visible contents and
+  the URL from the key. It never recognizes, so the model is never offered and
+  no action can reach: other direct messages, groups, sidebar sections,
+  reactions, uploads, downloads, deletion, external links, sign-in or
+  sign-out, workspace or account settings, search, threads, scheduling, or
+  any other control.
 - **Decisions are bound to identity and freshness.** A snapshot records the
   target id, URL, and a digest of every recognized candidate. Immediately
   before any action the adapter re-observes and refuses unless the target id,
