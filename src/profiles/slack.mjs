@@ -4,10 +4,12 @@
  * exactly three typed actions:
  *
  * - destination: a channel in the Slack web client on the same origin as
- *   the page, either a channel link or a sidebar tree row (the current
- *   client renders the sidebar as `treeitem` rows that carry the channel id
- *   in `data-item-key`, have no link, and whose accessible name the browser
- *   leaves empty, so the name comes from the row's contents); action: click.
+ *   the page, either a channel link or a sidebar tree row, plus the one
+ *   exactly allowlisted self-DM identity in a sidebar tree row; action: click.
+ *   Channel rows carry their C id and the self-DM row its D id in
+ *   `data-item-key`; the current client renders these rows without links and
+ *   Chromium leaves their accessible names empty, so the names come from the
+ *   rows' contents.
  * - composer: the conversation's message textbox, by its English accessible
  *   name or by Slack's locale-independent `data-qa="texty_input"` hook;
  *   actions: click (focus) and insertText (the caller's exact text).
@@ -16,9 +18,10 @@
  *   button is enabled.
  *
  * Reactions, uploads, downloads, deletion, external links, sign-in or
- * sign-out, workspace and account settings, search, threads, direct
- * messages, sidebar sections, and every other control are never recognized,
- * so the model is never offered them and no action can reach them.
+ * sign-out, workspace and account settings, search, threads, every other
+ * direct message, sidebar sections, and every other control are never
+ * recognized, so the model is never offered them and no action can reach
+ * them.
  */
 import { parseUrl } from "./profile.mjs";
 
@@ -35,6 +38,15 @@ const SLACK_CLIENT_TEAM_PATH = /^\/client\/(T[A-Z0-9]{2,})(?:\/|$)/;
 
 /** A sidebar row's `data-item-key` when the row is a channel (not a DM, group, or section). */
 export const SLACK_CHANNEL_ITEM_KEY = /^C[A-Z0-9]{2,}$/;
+
+/** The sole direct-message name that the profile permits as a destination. */
+export const SLACK_SELF_DM_NAME = "Yasuhito Takamiya (自分)";
+
+/** A sidebar row's `data-item-key` when it identifies a direct message. */
+export const SLACK_DM_ITEM_KEY = /^D[A-Z0-9]{2,}$/;
+
+/** Slack web client self-DM path: /client/<team>/<D id>. */
+const SLACK_SELF_DM_PATH = /^\/client\/(T[A-Z0-9]{2,})\/(D[A-Z0-9]{2,})\/?$/;
 
 /** Composer textboxes are named "Message #channel", "Message Alice", ... */
 export const SLACK_COMPOSER_NAME = /^message\b/i;
@@ -69,6 +81,21 @@ export function classifySlackTarget(url, origin) {
 }
 
 /**
+ * Classify the one allowlisted self-DM URL relative to the page origin.
+ *
+ * @param {string} url
+ * @param {string} origin
+ * @returns {{team: string, conversation: string, kindLabel: "self direct message"}|null}
+ */
+export function classifySlackSelfDmTarget(url, origin) {
+  const parsed = parseUrl(url);
+  if (!parsed || parsed.origin !== origin || parsed.search !== "" || parsed.hash !== "") return null;
+  const match = SLACK_SELF_DM_PATH.exec(parsed.pathname);
+  if (!match || match[1] === undefined || match[2] === undefined) return null;
+  return { team: match[1], conversation: match[2], kindLabel: "self direct message" };
+}
+
+/**
  * The client URL a sidebar tree row opens: the page's team plus the row's
  * channel id. Null unless the page is a Slack client page and the row is a
  * channel row.
@@ -86,6 +113,38 @@ export function sidebarChannelUrl(row, target) {
   if (!page || team === undefined) return null;
   const url = `${page.origin}/client/${team}/${key}`;
   return classifySlackTarget(url, target.origin) ? url : null;
+}
+
+/**
+ * The URL for the exact self-DM row, derived from its observed D id.
+ * Nothing else with a D id is eligible: both the row name and identity key
+ * must match the allowlist before the URL can be constructed.
+ *
+ * @param {ObservedNode|Candidate} row
+ * @param {ObservedTarget} target
+ * @returns {string|null}
+ */
+function sidebarSelfDmUrl(row, target) {
+  if (row.role !== "treeitem") return null;
+  const key = row.attributes["data-item-key"];
+  if (key === undefined || !SLACK_DM_ITEM_KEY.test(key)) return null;
+  const rowName = row.name.length > 0 ? row.name : ("contentText" in row ? row.contentText : "");
+  if (rowName !== SLACK_SELF_DM_NAME) return null;
+  const page = parseUrl(target.url);
+  const team = page && page.origin === target.origin ? SLACK_CLIENT_TEAM_PATH.exec(page.pathname)?.[1] : undefined;
+  if (!page || team === undefined) return null;
+  const url = `${page.origin}/client/${team}/${key}`;
+  return classifySlackSelfDmTarget(url, target.origin) ? url : null;
+}
+
+/**
+ * Names that the workflow's exact-destination guard could otherwise treat as
+ * decoration on the allowlisted self-DM name must never be a channel target.
+ * @param {string} name
+ */
+function namesSelfDm(name) {
+  if (name === SLACK_SELF_DM_NAME) return true;
+  return name.startsWith(SLACK_SELF_DM_NAME) && /^[\s,([{（［｛]/.test(name.slice(SLACK_SELF_DM_NAME.length));
 }
 
 /** @param {ObservedNode|Candidate} node */
@@ -118,16 +177,21 @@ export function createSlackProfile({ name, description, allowedOrigin }) {
     },
     recognize(node, target) {
       if (node.role === "link" && node.url !== null) {
-        if (node.name.length === 0) return null;
+        if (node.name.length === 0 || namesSelfDm(node.name)) return null;
         const classified = classifySlackTarget(node.url, target.origin);
         if (!classified) return null;
         return { kind: "destination", label: `${node.name} [${classified.kindLabel}]` };
       }
       if (node.role === "treeitem") {
-        const url = sidebarChannelUrl(node, target);
         const rowName = node.name.length > 0 ? node.name : node.contentText;
-        if (url === null || rowName.length === 0) return null;
-        return { kind: "destination", label: `${rowName} [channel]`, name: rowName, url };
+        const channelUrl = sidebarChannelUrl(node, target);
+        if (channelUrl !== null && rowName.length > 0 && !namesSelfDm(rowName)) {
+          return { kind: "destination", label: `${rowName} [channel]`, name: rowName, url: channelUrl };
+        }
+        const selfDmUrl = sidebarSelfDmUrl(node, target);
+        if (selfDmUrl !== null) {
+          return { kind: "destination", label: `${rowName} [self direct message]`, name: rowName, url: selfDmUrl };
+        }
       }
       if (node.name.length === 0) return null;
       if (isComposer(node)) return { kind: "composer", label: node.name };
@@ -141,11 +205,16 @@ export function createSlackProfile({ name, description, allowedOrigin }) {
           const url = candidate.role === "treeitem" ? sidebarChannelUrl(candidate, target) : candidate.url;
           const isChannel =
             (candidate.role === "link" || candidate.role === "treeitem") &&
+            !namesSelfDm(candidate.name) &&
             url !== null &&
             url === candidate.url &&
             classifySlackTarget(url, target.origin) !== null;
-          if (!isChannel) {
-            return { ok: false, reason: "destination is not a same-origin Slack client channel link or sidebar channel row" };
+          const isSelfDm =
+            candidate.role === "treeitem" &&
+            candidate.name === SLACK_SELF_DM_NAME &&
+            sidebarSelfDmUrl(candidate, target) === candidate.url;
+          if (!isChannel && !isSelfDm) {
+            return { ok: false, reason: "destination is not an allowed same-origin channel or the exact self-DM row" };
           }
           return { ok: true };
         }

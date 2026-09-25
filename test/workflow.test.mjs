@@ -11,6 +11,9 @@ import { decideByLabel, decideFixed, fakeClock } from "./helpers.mjs";
 const ALLOWED = new Set(ALLOWED_CDP_METHODS);
 const QA2 = "https://app.slack.com/client/T0SYNTH/C0QA2METRICS";
 const TREE_QA2 = "https://app.slack.com/client/T0SYNTH/C0QA2";
+const SELF_DM_NAME = "Yasuhito Takamiya (自分)";
+const SELF_DM_URL = "https://app.slack.com/client/T0SYNTH/D0SELF";
+const SELF_DM_FLOW = [/^Yasuhito Takamiya \(自分\) \[self direct message\]$/, /^Yasuhito Takamiya \(自分\) へのメッセージ$/, /^メッセージを送信$/];
 const TEXT = "QA2 daily users: 1234 (+5% vs yesterday)";
 const FULL_FLOW = [/^qa2-metrics/, /^Message #qa2-metrics/, /^Send now/];
 /** The same three choices on the real-shaped (Japanese, tree-sidebar) page. */
@@ -25,6 +28,14 @@ const treeShape = () => {
   return { page };
 };
 const UNTRUSTED_PROFILE = { ...SLACK_PROFILE, name: "untrusted-test", trusted: false };
+
+/** @returns {import("./fixtures/synthetic-slack.mjs").SyntheticPage} */
+function selfDmPage() {
+  const page = loadSyntheticPage({ shape: "tree" });
+  page.conversations = page.conversations.filter((conversation) => conversation.kind === "channel");
+  page.conversations.push({ id: "D0SELF", name: SELF_DM_NAME, kind: "dm" });
+  return page;
+}
 
 /**
  * @param {Parameters<typeof createFakeCdp>[0]} [fakeOptions]
@@ -604,6 +615,156 @@ test("duplicateMarker refuses when the rendered destination contains the marker,
   const plan = await run(setup(), { mode: "dry-run", text: TEXT, decide: decideByLabel([/^qa2-metrics/, /^Message #general/, /^Send now/]), exactDestination: true, duplicateMarker: "m" });
   const planStep = /** @type {{guards: object}|undefined} */ (plan.steps.find((s) => /** @type {{step: string}} */ (s).step === "plan"));
   assert.deepEqual(planStep?.guards, { exactDestination: true, duplicateMarker: "m" });
+});
+
+/* ----------------------------- allowlisted self-DM ----------------------------- */
+
+test("the exact allowlisted self-DM can send once and its marker blocks a duplicate rerun", async () => {
+  const page = selfDmPage();
+  page.conversations.push({ id: "C0SAME", name: SELF_DM_NAME, kind: "channel" });
+  const env = setup({ page });
+  const marker = "synthetic-self-dm-run-1";
+  const text = `${TEXT}\n${marker}`;
+  const report = await run(env, {
+    mode: "send",
+    destination: SELF_DM_NAME,
+    text,
+    decide: decideByLabel(SELF_DM_FLOW),
+    exactDestination: true,
+    duplicateMarker: marker,
+  });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
+  assert.equal(report.destination.candidate?.url, SELF_DM_URL);
+  assert.equal(env.fake.currentUrl(), SELF_DM_URL);
+  assert.deepEqual(env.fake.currentMessages(), [text]);
+  assert.equal(env.fake.clicks().length, 3);
+  assert.deepEqual(env.fake.state.sideEffects, []);
+  const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, true);
+
+  const again = await run(env, {
+    mode: "send",
+    destination: SELF_DM_NAME,
+    text,
+    decide: decideByLabel(SELF_DM_FLOW),
+    exactDestination: true,
+    duplicateMarker: marker,
+  });
+  assert.equal(again.status, "refused");
+  assert.equal(again.refusal?.code, "duplicate_post");
+  assert.equal(env.fake.methodCalls("Input.insertText").length, 1);
+  assert.deepEqual(env.fake.currentMessages(), [text]);
+});
+
+test("a similarly named or other DM is not recognized as the allowlisted self-DM", async () => {
+  for (const name of ["Yasuhito Takamiya", "Yasuhito Takamiya (自分) copy", "Alice Example"]) {
+    const page = selfDmPage();
+    const dm = page.conversations.find((conversation) => conversation.kind === "dm");
+    assert.ok(dm);
+    dm.name = name;
+    const env = setup({ page });
+    const report = await run(env, {
+      mode: "send",
+      destination: SELF_DM_NAME,
+      text: TEXT,
+      decide: decideByLabel([/^Yasuhito|^Alice/]),
+      exactDestination: true,
+    });
+    assert.equal(report.status, "no_match", name);
+    assert.equal(report.completed, null, name);
+    assertNoInput(env.fake);
+  }
+});
+
+test("an unproven self-DM identity cannot fall back to another channel", async () => {
+  const page = selfDmPage();
+  const dm = page.conversations.find((conversation) => conversation.kind === "dm");
+  assert.ok(dm);
+  dm.name = "Yasuhito Takamiya";
+  const env = setup({ page });
+  const report = await run(env, {
+    mode: "send",
+    destination: SELF_DM_NAME,
+    text: TEXT,
+    decide: decideByLabel([/^general \[channel\]$/]),
+    exactDestination: true,
+  });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "destination_mismatch");
+  assert.equal(report.completed, null);
+  assertNoInput(env.fake);
+});
+
+test("duplicate exact-name self-DM identities are refused as ambiguous", async () => {
+  const page = selfDmPage();
+  page.conversations.push({ id: "D0SECOND", name: SELF_DM_NAME, kind: "dm" });
+  const env = setup({ page });
+  const report = await run(env, {
+    mode: "send",
+    destination: SELF_DM_NAME,
+    text: TEXT,
+    decide: decideByLabel(SELF_DM_FLOW),
+    exactDestination: true,
+  });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "ambiguous_identity");
+  assertNoInput(env.fake);
+});
+
+test("a same-name channel is not an eligible destination for the self-DM allowlist", async () => {
+  const page = selfDmPage();
+  page.conversations = page.conversations.filter((conversation) => conversation.kind === "channel");
+  page.conversations.push({ id: "C0SAME", name: SELF_DM_NAME, kind: "channel" });
+  const env = setup({ page });
+  const observed = await env.adapter.observe();
+  assert.equal(observed.candidates.some((candidate) => candidate.name === SELF_DM_NAME), false);
+  const report = await run(env, {
+    mode: "navigate",
+    destination: SELF_DM_NAME,
+    decide: decideByLabel([/^Yasuhito Takamiya/]),
+    exactDestination: true,
+  });
+  assert.equal(report.status, "no_match");
+  assertNoInput(env.fake);
+});
+
+test("a self-DM whose observed D identity changes after selection refuses before clicking", async () => {
+  const page = selfDmPage();
+  const dm = page.conversations.find((conversation) => conversation.kind === "dm");
+  assert.ok(dm);
+  const env = setup({ page });
+  const decide = decideByLabel(SELF_DM_FLOW, { onCall: (index) => { if (index === 0) dm.id = "D0CHANGED"; } });
+  const report = await run(env, {
+    mode: "send",
+    destination: SELF_DM_NAME,
+    text: TEXT,
+    decide,
+    exactDestination: true,
+  });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "changed_state");
+  assertNoInput(env.fake);
+});
+
+test("an unverified self-DM send remains unverified and is never reported as posted", async () => {
+  const env = setup({ page: selfDmPage(), startPath: "/client/T0SYNTH/D0SELF" });
+  env.fake.state.posting = false;
+  const report = await run(env, {
+    mode: "send",
+    destination: SELF_DM_NAME,
+    text: TEXT,
+    decide: decideByLabel(SELF_DM_FLOW),
+    exactDestination: true,
+    duplicateMarker: "synthetic-unverified-run",
+  });
+  assert.equal(report.status, "unverified");
+  assert.equal(report.completed, "send");
+  assert.deepEqual(env.fake.currentMessages(), []);
+  assert.equal(env.fake.currentDraft(), TEXT);
+  assert.equal(env.fake.clicks().length, 2);
+  const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, false);
 });
 
 /* ----------------------------- real-shaped page ----------------------------- */
