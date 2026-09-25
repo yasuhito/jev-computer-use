@@ -486,14 +486,16 @@ All dates are UTC calendar days. With the current clock:
   format. Both checks use the currently rendered accessibility tree, so this
   remains a best-effort duplicate defense, not durable exactly-once delivery.
 
-Slack message (mrkdwn, exactly four lines; no source footer or missing-row
-note; identical input gives identical output):
+Slack message (plain text, exactly four lines; no markup, source footer, or
+missing-row note; identical input gives identical output). The composer posts
+inserted text literally, so the message carries no `*` bold markers; the three
+Unicode emoji prefixes are the only decoration:
 
 ```
-*QA² 新規ユーザー｜9/24（UTC）*
-👤 *1人*（前日より *+1人*）
-⚖️ 直近7日平均 *2人* より *1人少なめ*（-50%）
-📅 直近7日（9/18→9/24）：*2 → 4 → 3 → 3 → 1 → 0 → 1人*
+QA² 新規ユーザー｜9/24（UTC）
+👤 1人（前日より +1人）
+⚖️ 直近7日平均 2人 より 1人少なめ（-50%）
+📅 直近7日（9/18→9/24）：2 → 4 → 3 → 3 → 1 → 0 → 1人
 ```
 
 Source auditability is retained in the `jev-cu-report` JSON payload's

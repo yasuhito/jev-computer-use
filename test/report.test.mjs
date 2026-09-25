@@ -221,10 +221,10 @@ test("the Slack message matches the approved four-line QA² example exactly", ()
   assert.equal(
     message,
     [
-      "*QA² 新規ユーザー｜9/24（UTC）*",
-      "👤 *1人*（前日より *+1人*）",
-      "⚖️ 直近7日平均 *2人* より *1人少なめ*（-50%）",
-      "📅 直近7日（9/18→9/24）：*2 → 4 → 3 → 3 → 1 → 0 → 1人*",
+      "QA² 新規ユーザー｜9/24（UTC）",
+      "👤 1人（前日より +1人）",
+      "⚖️ 直近7日平均 2人 より 1人少なめ（-50%）",
+      "📅 直近7日（9/18→9/24）：2 → 4 → 3 → 3 → 1 → 0 → 1人",
     ].join("\n"),
   );
   assert.equal(renderSlackMessage(report), message);
@@ -232,6 +232,34 @@ test("the Slack message matches the approved four-line QA² example exactly", ()
   assert.equal(report.missingDates.length, 0);
   assert.throws(() => renderSlackMessage(report, { seriesDays: 15 }), /1\.\.8/);
   assert.doesNotMatch(message, /<@|<#|https?:\/\/|unity-new-users|Snowflake|no rows/i);
+});
+
+test("the four Slack lines carry the QA² title and the three emoji prefixes with no raw bold markers", () => {
+  const now = Date.parse("2026-09-25T09:00:00Z");
+  /** @type {Array<[string, number]>} */
+  const series = [
+    ["2026-09-17", 1234],
+    ["2026-09-18", 1300],
+    ["2026-09-19", 1220],
+    ["2026-09-20", 1185],
+    ["2026-09-21", 1160],
+    ["2026-09-22", 1205],
+    ["2026-09-23", 1178],
+    ["2026-09-24", 1234],
+  ];
+  for (const last of [1234, 1035, 1100, 0]) {
+    const points = /** @type {Array<[string, number]>} */ ([...series.slice(0, -1), ["2026-09-24", last]]);
+    const lines = renderSlackMessage(reportFrom(points, 8, now)).split("\n");
+    assert.equal(lines.length, 4);
+    assert.equal(lines[0], "QA² 新規ユーザー｜9/24（UTC）");
+    assert.ok(lines[1]?.startsWith("👤 "));
+    assert.ok(lines[2]?.startsWith("⚖️ 直近7日平均 "));
+    assert.ok(lines[3]?.startsWith("📅 直近7日（9/18→9/24）："));
+    for (const line of lines) {
+      // Slack posts inserted text literally, so no mrkdwn marker may reach it.
+      assert.doesNotMatch(line, /[*_~`]/);
+    }
+  }
 });
 
 test("the Slack comparison copy preserves positive, equal, negative, and zero-baseline semantics", () => {
@@ -247,12 +275,12 @@ test("the Slack comparison copy preserves positive, equal, negative, and zero-ba
     ["2026-09-23", 2],
     ["2026-09-24", lastValue],
   ];
-  assert.match(renderSlackMessage(reportFrom(points(3), 8, now)), /⚖️ 直近7日平均 \*2人\* より \*1人多め\*（\+50%）/);
-  assert.match(renderSlackMessage(reportFrom(points(2), 8, now)), /⚖️ 直近7日平均 \*2人\* と \*同じ\*（\+0%）/);
+  assert.match(renderSlackMessage(reportFrom(points(3), 8, now)), /⚖️ 直近7日平均 2人 より 1人多め（\+50%）/);
+  assert.match(renderSlackMessage(reportFrom(points(2), 8, now)), /⚖️ 直近7日平均 2人 と 同じ（\+0%）/);
   const zeroBaseline = renderSlackMessage(reportFrom([["2026-09-24", 1]], 8, now));
-  assert.match(zeroBaseline, /⚖️ 直近7日平均 \*0人\* より \*1人多め\*/);
+  assert.match(zeroBaseline, /⚖️ 直近7日平均 0人 より 1人多め/);
   assert.doesNotMatch(zeroBaseline.split("\n")[2] ?? "", /%/);
-  assert.match(zeroBaseline, /前日より \*\+1人\*/);
+  assert.match(zeroBaseline, /前日より \+1人/);
 });
 
 test("number formatting is locale-free and always signs deltas", () => {

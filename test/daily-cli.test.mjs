@@ -114,7 +114,7 @@ test("the daily CLI posts once, records the date, and prints a scrubbed payload"
     assert.equal(messages.length, 1);
     const posted = messages[0];
     assert.ok(posted);
-    assert.match(posted, /^\*QA² 新規ユーザー｜9\/20（UTC）\*/);
+    assert.match(posted, /^QA² 新規ユーザー｜9\/20（UTC）\n👤 /);
     assert.equal(posted.split("\n").length, 4);
     assert.doesNotMatch(posted, new RegExp(KEY));
     assert.equal(fake.state.disconnected, true);
