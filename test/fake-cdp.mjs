@@ -5,9 +5,15 @@
  * the model the way the real page would (link or sidebar-row click
  * navigates, composer click focuses, insertText appends to the focused
  * textbox, send posts).
+ *
+ * Like the real client, the page turns the Unicode emoji of
+ * SYNTHETIC_EMOJI into images: the composer's accessibility value and text
+ * lack them, and `DOM.describeNode` with a depth describes the composer as
+ * one `<p>` per line and a posted message as a rich-text section with `<br>`
+ * line breaks, both holding the emoji `<img>` elements.
  */
 import { TransportError, CdpProtocolError } from "../src/errors.mjs";
-import { loadSyntheticPage, buildElements } from "./fixtures/synthetic-slack.mjs";
+import { loadSyntheticPage, buildElements, emojiSegments, emojiImageAttributes, withoutEmoji } from "./fixtures/synthetic-slack.mjs";
 
 /** @typedef {import("./fixtures/synthetic-slack.mjs").Element} Element */
 
@@ -89,6 +95,10 @@ export function createFakeCdp({
      * U+000A instead.
      */
     clearedDraft: "",
+    /** Attributes of the emoji images the page renders; override to model other identity attributes. */
+    emojiAttributes: emojiImageAttributes,
+    /** @type {((text: string) => string)|null} simulates a posted message whose DOM text differs from what the accessibility tree exposes */
+    transformMessageDom: null,
   };
 
   /** @type {Array<{method: string, params: Record<string, unknown>}>} */
@@ -156,11 +166,15 @@ export function createFakeCdp({
       ignored: false,
       role: { type: "role", value: e.role === "statictext" ? "StaticText" : e.role },
       name: { type: "computedString", value: e.role === "statictext" ? slackParagraphs(e.name) : e.name },
+      // (the composer's value below drops its emoji images, as Chromium does)
       properties,
       backendDOMNodeId: e.id,
       childIds: messageChildren ?? (hasTextChild(e) ? [String(e.id + TEXT_CHILD_OFFSET)] : []),
     };
-    if (e.value !== null) Object.assign(node, { value: { type: "string", value: slackParagraphs(e.value) } });
+    if (e.value !== null) {
+      const value = e.key === "composer" ? withoutEmoji(e.value) : e.value;
+      Object.assign(node, { value: { type: "string", value: slackParagraphs(value) } });
+    }
     return node;
   };
 
@@ -172,11 +186,61 @@ export function createFakeCdp({
     nodeId: String(e.id + TEXT_CHILD_OFFSET),
     ignored: false,
     role: { type: "role", value: "StaticText" },
-    name: { type: "computedString", value: slackParagraphs(e.text ?? "") },
+    name: { type: "computedString", value: slackParagraphs(e.key === "composer" ? withoutEmoji(e.text ?? "") : e.text ?? "") },
     properties: [],
     backendDOMNodeId: e.id + TEXT_CHILD_OFFSET,
     childIds: [],
   });
+
+  let nextDomId = 900_000;
+  /**
+   * @param {string} name
+   * @param {Record<string, string>} [attributes]
+   * @param {object[]} [children]
+   * @param {number} [backendNodeId]
+   */
+  const domElement = (name, attributes = {}, children = [], backendNodeId = nextDomId++) => ({
+    nodeId: 0,
+    backendNodeId,
+    nodeType: 1,
+    nodeName: name.toUpperCase(),
+    localName: name,
+    nodeValue: "",
+    attributes: Object.entries(attributes).flat(),
+    childNodeCount: children.length,
+    children,
+  });
+  /** @param {string} value */
+  const domText = (value) => ({ nodeId: 0, backendNodeId: nextDomId++, nodeType: 3, nodeName: "#text", localName: "", nodeValue: value });
+  /**
+   * @param {string} line
+   * @param {"composer"|"message"} where
+   */
+  const domInline = (line, where) =>
+    emojiSegments(line).map((segment) =>
+      "text" in segment ? domText(segment.text) : domElement("img", state.emojiAttributes(segment.emoji, where)),
+    );
+  /**
+   * The composer's contents: one paragraph per line, an empty line holding a
+   * `<br>`. The first paragraph takes the id the hit test may return for the
+   * composer's text child, so a descendant hit stays inside the subtree.
+   *
+   * @param {string} draft
+   * @param {number} firstId
+   */
+  const composerDom = (draft, firstId) =>
+    (draft === "\n" ? [""] : draft.split("\n")).map((line, index) =>
+      domElement("p", {}, line === "" ? [domElement("br")] : domInline(line, "composer"), index === 0 ? firstId : nextDomId++),
+    );
+  /** @param {string} text a posted message as a rich-text section with `<br>` line breaks */
+  const messageDom = (text) =>
+    domElement("div", { class: "c-message_kit__blocks" }, [
+      domElement(
+        "div",
+        { class: "p-rich_text_section" },
+        text.split("\n").flatMap((line, index) => [...(index > 0 ? [domElement("br")] : []), ...domInline(line, "message")]),
+      ),
+    ]);
 
   /**
    * @param {Element & {id: number, index: number}} e
@@ -236,7 +300,7 @@ export function createFakeCdp({
             name: { type: "computedString", value: title },
             properties: [],
             backendDOMNodeId: ROOT_ID,
-            childIds: elements.filter((e) => !/:p\d+$/.test(e.key)).map((e) => String(e.id)),
+            childIds: elements.filter((e) => !/:p\d+(s\d+)?$/.test(e.key)).map((e) => String(e.id)),
           },
         ];
         for (const e of elements) {
@@ -270,9 +334,18 @@ export function createFakeCdp({
         const id = Number(params.backendNodeId);
         const e = elementById(id);
         if (!e) throw new CdpProtocolError(method, { code: -32000, message: "Could not find node with given id" });
-        const children = hasTextChild(e) ? [{ nodeId: 0, backendNodeId: e.id + TEXT_CHILD_OFFSET, nodeName: "#text" }] : [];
+        const posted = /^message:(\d+)$/.exec(e.key);
+        const message = posted && e.role === "listitem" ? currentMessages()[Number(posted[1])] : undefined;
+        const children =
+          e.key === "composer"
+            ? composerDom(currentDraft(), e.id + TEXT_CHILD_OFFSET)
+            : message !== undefined
+              ? [messageDom(state.transformMessageDom ? state.transformMessageDom(message) : message)]
+              : hasTextChild(e)
+                ? [{ nodeId: 0, backendNodeId: e.id + TEXT_CHILD_OFFSET, nodeType: 3, nodeName: "#text", localName: "", nodeValue: e.text ?? "" }]
+                : [];
         const attributes = Object.entries(e.attributes).flat();
-        const node = { nodeId: 0, backendNodeId: e.id, nodeName: e.role.toUpperCase(), attributes };
+        const node = { nodeId: 0, backendNodeId: e.id, nodeType: 1, nodeName: e.role.toUpperCase(), attributes };
         // depth 0 (the default) describes the node alone; anything else includes the subtree
         return { node: params.depth === undefined || params.depth === 0 ? node : { ...node, children } };
       }

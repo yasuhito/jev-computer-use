@@ -19,7 +19,7 @@ import { validateRequest, ValidationError, isPlainObject } from "./validate.mjs"
 import { buildRequest, runDecision } from "./decide.mjs";
 import { applyPolicy } from "./policy.mjs";
 import { RefusalError } from "./errors.mjs";
-import { urlReached, sameUrl, assertFreshCandidate, editorValueIsEmpty, paragraphEqual } from "./cdp/adapter.mjs";
+import { urlReached, sameUrl, assertFreshCandidate, editorValueIsEmpty } from "./cdp/adapter.mjs";
 
 /** @typedef {import("./cdp/adapter.mjs").CdpAdapter} CdpAdapter */
 /** @typedef {import("./cdp/adapter.mjs").Snapshot} Snapshot */
@@ -190,21 +190,25 @@ function atDestination(snapshot, destinationUrl) {
 
 /**
  * The send-time composer check compares through the same canonical
- * paragraph-aware equality as the insertText read-back (see paragraphEqual
- * in CdpAdapter): the page's accessibility tree may read every paragraph
- * boundary as a blank line, so only blank-line differences are tolerated
- * and every non-empty line must match exactly and in order.
+ * paragraph-aware equality as the insertText read-back (CdpAdapter
+ * editorHolds, built on paragraphEqual): the page's accessibility tree may
+ * read every paragraph boundary as a blank line, so only blank-line
+ * differences are tolerated, every non-empty line must match exactly and in
+ * order, and an inline element (an emoji image) counts only as the text the
+ * profile proves it stands for.
  *
+ * @param {CdpAdapter} adapter
  * @param {Snapshot} snapshot
  * @param {number} composerBackendNodeId
  * @param {string} text
- * @returns {{ok: true} | {ok: false, code: "text_mismatch", reason: string}}
+ * @returns {Promise<{ok: true} | {ok: false, code: "text_mismatch", reason: string}>}
  */
-function composerHolds(snapshot, composerBackendNodeId, text) {
+async function composerHolds(adapter, snapshot, composerBackendNodeId, text) {
   const composer = snapshot.candidates.find((c) => c.backendNodeId === composerBackendNodeId);
   if (!composer) return { ok: false, code: "text_mismatch", reason: "the composer is no longer observable" };
-  if (!paragraphEqual(composer.value, text)) {
-    return { ok: false, code: "text_mismatch", reason: "the composer no longer holds the caller text" };
+  const check = await adapter.editorHolds(composer.backendNodeId, composer.value, text);
+  if (!check.ok) {
+    return { ok: false, code: "text_mismatch", reason: `the composer no longer holds the caller text: ${check.reason}` };
   }
   return { ok: true };
 }
@@ -462,7 +466,7 @@ export async function runWorkflow({
     const beforeSend = await adapter.observe();
     const stillThere = atDestination(beforeSend, destinationUrl);
     if (!stillThere.ok) throw new RefusalError(stillThere.code, stillThere.reason);
-    const holds = composerHolds(beforeSend, composer.backendNodeId, text);
+    const holds = await composerHolds(adapter, beforeSend, composer.backendNodeId, text);
     if (!holds.ok) throw new RefusalError(holds.code, holds.reason);
     const sends = beforeSend.candidates.filter((c) => c.kind === "send");
     const sendControl = await decideStep(
@@ -474,10 +478,10 @@ export async function runWorkflow({
     if (!sendControl) return report;
     assertAllowed(sendControl, "click", beforeSend);
     const sent = await adapter.click(beforeSend, sendControl.id, {
-      require: (fresh) => {
+      require: async (fresh) => {
         const here = atDestination(fresh, destinationUrl);
         if (!here.ok) return here;
-        return composerHolds(fresh, composer.backendNodeId, text);
+        return composerHolds(adapter, fresh, composer.backendNodeId, text);
       },
     });
     report.steps.push({ step: "send", phase: "act", ...sent });
@@ -498,7 +502,8 @@ export async function runWorkflow({
       // the text's non-empty lines must be one contiguous run in tree order.
       // A missing, reordered, altered, or interleaved
       // non-empty line never verifies; unnamed container nodes around the
-      // paragraphs never break the run.
+      // paragraphs never break the run. A message whose emoji render as
+      // images verifies only through the profile's proof of each image.
       const found = await adapter.findText(text, { match: "sequence" });
       return found.count > 0;
     });

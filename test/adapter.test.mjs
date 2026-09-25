@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CdpAdapter, ALLOWED_CDP_METHODS, MAX_ATTRIBUTE_LOOKUPS, urlReached, digestCandidates, editorValueIsEmpty, paragraphEqual } from "../src/cdp/adapter.mjs";
+import { CdpAdapter, ALLOWED_CDP_METHODS, MAX_ATTRIBUTE_LOOKUPS, urlReached, digestCandidates, editorValueIsEmpty, paragraphEqual, domText, UNRESOLVED_INLINE } from "../src/cdp/adapter.mjs";
 import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
 import { RefusalError, TransportError, CdpProtocolError } from "../src/errors.mjs";
 import { createFakeCdp, TEXT_CHILD_OFFSET } from "./fake-cdp.mjs";
-import { loadSyntheticPage } from "./fixtures/synthetic-slack.mjs";
+import { loadSyntheticPage, emojiImageAttributes } from "./fixtures/synthetic-slack.mjs";
 import { fakeClock } from "./helpers.mjs";
 
 const ALLOWED = new Set(ALLOWED_CDP_METHODS);
@@ -603,6 +603,178 @@ test("findText sequence reads each rendered line once and named leaf nodes contr
   const labeled = await plain.adapter.findText("only label", { match: "sequence" });
   assert.equal(labeled.count, 1);
   assert.deepEqual(labeled.backendNodeIds, [plain.fake.idFor("labeled")]);
+});
+
+/* ----------------------------- emoji images ----------------------------- */
+
+/** The approved four-line QA² layout with synthetic numbers. */
+const EMOJI_REPORT = [
+  "QA² 新規ユーザー｜9/24（UTC）",
+  "👤 1,234人（前日より +56人）",
+  "⚖️ 直近7日平均 1,035.4人 より 198.6人多め（+19.2%）",
+  "📅 直近7日（9/18→9/24）：1,300 → 1,220 → 1,185 → 1,160 → 1,205 → 1,178 → 1,234人",
+].join("\n");
+/** The same profile with only accessibility-text comparison: the code before the emoji fix. */
+const ACCESSIBILITY_ONLY_PROFILE = { ...SLACK_PROFILE, name: "accessibility-only-test", inlineText: undefined };
+
+/**
+ * @param {ReturnType<typeof setup>} env
+ * @param {string} text
+ */
+async function insertIntoGeneral({ adapter }, text) {
+  const snapshot = await adapter.observe();
+  const composer = find(snapshot, /Message #general/);
+  return adapter.insertText(snapshot, composer.id, text);
+}
+
+test("the 2026-09-25 reproduction: emoji images read back without their characters, so accessibility text alone refuses", async () => {
+  // Trigger: the client turns 👤 ⚖️ 📅 into images with empty alt text.
+  // Symptom: Chromium never reads an image into an editable's value, so the
+  // read-back is the text minus the emoji; everything else is identical.
+  const env = setup({}, { profile: ACCESSIBILITY_ONLY_PROFILE });
+  await assert.rejects(insertIntoGeneral(env, EMOJI_REPORT), (/** @type {unknown} */ err) => {
+    assert.ok(err instanceof RefusalError);
+    assert.equal(err.code, "text_mismatch");
+    const readBack = String(err.details.readBack);
+    assert.equal(readBack, EMOJI_REPORT.replace(/👤|⚖️|📅/g, "").replace(/\n/g, "\n\n"));
+    return true;
+  });
+  // Masking condition: a plain-text draft never exercised the gap.
+  const plain = setup({}, { profile: ACCESSIBILITY_ONLY_PROFILE });
+  assert.equal((await insertIntoGeneral(plain, "QA2 new users\n1234")).verified, true);
+});
+
+test("insertText verifies the four-line emoji report by proving each emoji image from its attributes", async () => {
+  const env = setup();
+  const report = await insertIntoGeneral(env, EMOJI_REPORT);
+  assert.equal(report.verified, true);
+  assert.equal(report.inlineReplacements, 3);
+  assert.equal(env.fake.currentDraft(), EMOJI_REPORT);
+  assert.ok(env.fake.methodCalls("DOM.describeNode").some((call) => call.params.depth === -1));
+  // A plain-text draft still verifies through the accessibility value alone.
+  const plain = await insertIntoGeneral(setup(), "users today: 1234\nchange: +5%");
+  assert.equal(plain.inlineReplacements, 0);
+});
+
+test("insertText refuses missing, changed, moved, reordered, extra, and respelled emoji and unrelated text changes", async () => {
+  /** @type {Array<[string, (draft: string) => string, string?]>} */
+  const cases = [
+    ["missing emoji", (d) => d.replace("👤", "")],
+    ["another provable emoji", (d) => d.replace("👤", "📅")],
+    ["an emoji the profile cannot prove", (d) => d.replace("👤", "👥")],
+    ["moved within its line", (d) => d.replace("👤 1,234人", " 1,234人👤")],
+    ["reordered lines", (d) => { const l = d.split("\n"); return [l[0], l[2], l[1], l[3]].join("\n"); }],
+    ["an extra emoji", (d) => `${d}📅`],
+    ["a text change unrelated to emoji", (d) => d.replace("1,234人", "1,235人")],
+    ["a respelled scales emoji without U+FE0F in the caller text", (d) => d, "⚖"],
+  ];
+  for (const [name, transform, scales] of cases) {
+    const env = setup();
+    env.fake.state.transformDraft = transform;
+    const text = scales === undefined ? EMOJI_REPORT : EMOJI_REPORT.replace("⚖️", scales);
+    await rejectsRefusal(insertIntoGeneral(env, text), "text_mismatch").catch((err) => {
+      throw new Error(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+});
+
+test("an unexpected emoji image is refused even when the accessibility value alone would match", async () => {
+  // Accessibility text cannot see an image, so without the DOM an extra
+  // emoji would verify; the proven reading shows it.
+  const env = setup();
+  env.fake.state.transformDraft = (draft) => `${draft}👤`;
+  await rejectsRefusal(insertIntoGeneral(env, "users today: 1234"), "text_mismatch");
+  const unproven = setup();
+  unproven.fake.state.transformDraft = (draft) => `${draft}👥`;
+  await rejectsRefusal(insertIntoGeneral(unproven, "users today: 1234"), "text_mismatch");
+});
+
+test("insertText refuses emoji images whose identity is missing, conflicting, or not in the closed set", async () => {
+  /** @type {Array<[string, (emoji: Parameters<typeof emojiImageAttributes>[0], where: "composer"|"message") => Record<string, string>]>} */
+  const cases = [
+    ["no identity attribute", () => ({ alt: "", src: "/static/blank.png" })],
+    ["conflicting shortcode fields", (e, w) => ({ ...emojiImageAttributes(e, w), "data-id": ":date:" })],
+    ["a skin-tone shortcode", (e, w) => ({ ...emojiImageAttributes(e, w), "data-id": `:${e.shortcode}::skin-tone-2:` })],
+    ["a custom shortcode", (e, w) => ({ ...emojiImageAttributes(e, w), "data-stringify-text": ":qa2_logo:" })],
+    ["a different emoji character in alt", (e, w) => ({ ...emojiImageAttributes(e, w), alt: "👥" })],
+  ];
+  for (const [name, attributes] of cases) {
+    const env = setup();
+    env.fake.state.emojiAttributes = attributes;
+    await rejectsRefusal(insertIntoGeneral(env, "👤 1,234人"), "text_mismatch").catch((err) => {
+      throw new Error(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+  const env = setup();
+  env.fake.state.emojiAttributes = (e) => ({ alt: e.unicode, src: `/production-standard-emoji-assets/15.0/google-medium/${e.file}.png` });
+  await rejectsRefusal(insertIntoGeneral(env, "👤 1,234人"), "text_mismatch");
+});
+
+test("editorHolds refuses when the accessibility value disagrees with the editable's DOM text", async () => {
+  const { fake, adapter } = setup();
+  fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", "👤 1,234人");
+  const snapshot = await adapter.observe();
+  const composer = find(snapshot, /Message #general/);
+  assert.deepEqual(await adapter.editorHolds(composer.backendNodeId, " 1,234人", "👤 1,234人"), { ok: true, inlineReplacements: 1, reason: null });
+  const hidden = await adapter.editorHolds(composer.backendNodeId, " 1,234人 extra", "👤 1,234人");
+  assert.equal(hidden.ok, false);
+  assert.match(String(hidden.reason), /disagrees/);
+  assert.equal((await adapter.editorHolds(987654, " 1,234人", "👤 1,234人")).ok, false);
+});
+
+test("domText reads text, line breaks, blocks, proven elements, and unresolved opaque elements", () => {
+  /** @param {string} name @param {Record<string, string>} [attributes] @param {object[]} [children] */
+  const el = (name, attributes = {}, children = []) => ({ nodeType: 1, nodeName: name, attributes: Object.entries(attributes).flat(), children });
+  /** @param {string} value */
+  const tx = (value) => ({ nodeType: 3, nodeName: "#text", nodeValue: value });
+  const root = el("DIV", {}, [
+    el("P", {}, [el("IMG", { "data-x": "a" }), tx(" one")]),
+    el("P", {}, [tx("two"), el("BR"), tx("three"), el("SCRIPT", {}, [tx("ignored")])]),
+    el("SPAN", {}, [el("IMG", { "data-x": "unknown" })]),
+  ]);
+  /** @param {{nodeName: string, attributes: Readonly<Record<string, string>>}} e */
+  const resolve = (e) => (e.nodeName !== "IMG" ? undefined : e.attributes["data-x"] === "a" ? "A" : null);
+  const result = domText(root, resolve);
+  assert.equal(result.text, `\nA one\n\ntwo\nthree\n\n${UNRESOLVED_INLINE}\n`);
+  assert.equal(result.plain, `\n one\n\ntwo\nthree\n\n${UNRESOLVED_INLINE}\n`);
+  assert.equal(result.replaced, 1);
+  assert.equal(result.unresolved, 1);
+  // An unclaimed image is unresolved; a claimed element that holds text of its own is too.
+  assert.equal(domText(el("DIV", {}, [el("IMG")]), () => undefined).unresolved, 1);
+  assert.equal(domText(el("DIV", {}, [el("IMG", { "data-x": "a" }, [tx("t")])]), resolve).unresolved, 1);
+});
+
+test("findText sequence verifies a posted emoji message only through proven emoji images", async () => {
+  const { fake, adapter } = setup({ splitMessages: true });
+  fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["earlier post", EMOJI_REPORT, "later message"]);
+  const found = await adapter.findText(EMOJI_REPORT, { match: "sequence" });
+  assert.deepEqual(found.backendNodeIds, [fake.idFor("message:1")]);
+  // Before the fix the accessibility tree alone never verified the post.
+  const before = setup({ splitMessages: true }, { profile: ACCESSIBILITY_ONLY_PROFILE });
+  before.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT]);
+  assert.equal((await before.adapter.findText(EMOJI_REPORT, { match: "sequence" })).count, 0);
+});
+
+test("findText sequence does not verify a posted emoji message that differs, is split, is unprovable, or is not exposed", async () => {
+  /** @type {Array<[string, string[], ((env: ReturnType<typeof setup>) => void)?]>} */
+  const cases = [
+    ["another emoji", [EMOJI_REPORT.replace("📅", "👤")]],
+    ["an unprovable emoji", [EMOJI_REPORT.replace("👤", "👥")]],
+    ["a missing emoji", [EMOJI_REPORT.replace("⚖️", "")]],
+    ["an unrelated text change", [EMOJI_REPORT.replace("+56人", "+57人")]],
+    ["split across two messages", EMOJI_REPORT.split(/\n(?=⚖️)/)],
+    ["unprovable images", [EMOJI_REPORT], (env) => { env.fake.state.emojiAttributes = () => ({ alt: "", src: "/static/blank.png" }); }],
+    ["DOM text the accessibility tree does not expose", [EMOJI_REPORT.replace("1,234人（", "1,234人（")], (env) => {
+      env.fake.state.transformMessageDom = () => EMOJI_REPORT;
+      env.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT.replace("+56人", "+99人")]);
+    }],
+  ];
+  for (const [name, messages, arrange] of cases) {
+    const env = setup({ splitMessages: true });
+    env.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", messages);
+    if (arrange) arrange(env);
+    assert.equal((await env.adapter.findText(EMOJI_REPORT, { match: "sequence" })).count, 0, name);
+  }
 });
 
 test("urlReached compares normalized URLs and accepts sub-paths only at a boundary", () => {

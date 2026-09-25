@@ -132,10 +132,105 @@ export function conversationPath(page, c) {
 }
 
 /**
+ * Unicode emoji the synthetic client converts into image elements, the way
+ * the real Slack client replaces an emoji character typed or inserted into
+ * its composer (and rendered in a posted message) with an `<img>`. Chromium
+ * never reads an `<img>` into a contenteditable's accessibility value, and
+ * the composer's emoji images carry an empty `alt`, so the accessibility
+ * read-back of a draft holding emoji lacks them (the 2026-09-25 self-DM
+ * refusal). Shortcodes and asset file names follow Slack's standard emoji set;
+ * `👥` is here as a counterexample the Slack profile cannot prove, and a bare
+ * `⚖` (no U+FE0F) converts to the same `:scales:` image as `⚖️`.
+ */
+export const SYNTHETIC_EMOJI = Object.freeze([
+  { unicode: "👤", shortcode: "bust_in_silhouette", file: "1f464", label: "bust in silhouette" },
+  { unicode: "⚖️", shortcode: "scales", file: "2696-fe0f", label: "scales" },
+  { unicode: "⚖", shortcode: "scales", file: "2696-fe0f", label: "scales" },
+  { unicode: "📅", shortcode: "date", file: "1f4c5", label: "calendar" },
+  { unicode: "👥", shortcode: "busts_in_silhouette", file: "1f465", label: "busts in silhouette" },
+]);
+
+/** Where the synthetic page serves its emoji images (Slack's standard asset path shape). */
+export const EMOJI_ASSET_PREFIX = "/production-standard-emoji-assets/";
+/** A 1x1 transparent GIF served for every synthetic emoji asset, so nothing is fetched from the network. */
+export const BLANK_GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
+
+/** @typedef {(typeof SYNTHETIC_EMOJI)[number]} SyntheticEmoji */
+/** @typedef {{text: string} | {emoji: SyntheticEmoji}} Segment */
+
+/**
+ * Split one line into text runs and the emoji the synthetic client converts.
+ * Longer spellings win, so `⚖️` is one emoji, not `⚖` plus U+FE0F.
+ *
+ * @param {string} line
+ * @returns {Segment[]}
+ */
+export function emojiSegments(line) {
+  const byLength = [...SYNTHETIC_EMOJI].sort((a, b) => b.unicode.length - a.unicode.length);
+  /** @type {Segment[]} */
+  const segments = [];
+  let text = "";
+  for (let i = 0; i < line.length; ) {
+    const emoji = byLength.find((e) => line.startsWith(e.unicode, i));
+    if (emoji) {
+      if (text !== "") segments.push({ text });
+      text = "";
+      segments.push({ emoji });
+      i += emoji.unicode.length;
+    } else {
+      text += line[i];
+      i += 1;
+    }
+  }
+  if (text !== "") segments.push({ text });
+  return segments;
+}
+
+/**
+ * Remove every converted emoji: what Chromium's accessibility layer reads
+ * from text in which the client replaced the emoji with images.
+ *
+ * @param {string} text
+ */
+export function withoutEmoji(text) {
+  return text
+    .split("\n")
+    .map((line) => emojiSegments(line).map((segment) => ("text" in segment ? segment.text : "")).join(""))
+    .join("\n");
+}
+
+/**
+ * The attributes of an emoji image. In the composer the image carries an
+ * empty `alt` (no accessibility text) and its shortcode in `data-id` and
+ * `data-stringify-text`; in a posted message it carries its shortcode in
+ * `alt` and `data-stringify-emoji` and a descriptive `aria-label`. Both
+ * point `src` at the standard emoji asset named by the code points.
+ *
+ * @param {SyntheticEmoji} emoji
+ * @param {"composer"|"message"} where
+ * @returns {Record<string, string>}
+ */
+export function emojiImageAttributes(emoji, where) {
+  const code = `:${emoji.shortcode}:`;
+  const src = `${EMOJI_ASSET_PREFIX}15.0/google-medium/${emoji.file}.png`;
+  if (where === "composer") {
+    return { class: "c-emoji c-emoji__medium", alt: "", src, "data-id": code, "data-stringify-text": code };
+  }
+  return {
+    class: "c-emoji__img",
+    alt: code,
+    "aria-label": `${emoji.label} emoji`,
+    src,
+    "data-stringify-type": "emoji",
+    "data-stringify-emoji": code,
+  };
+}
+
+/**
  * One element in document order. `key` is stable across renders.
  * @typedef {object} Element
  * @property {string} key
- * @property {"heading"|"link"|"treeitem"|"textbox"|"button"|"statictext"|"paragraph"|"listitem"} role
+ * @property {"heading"|"link"|"treeitem"|"textbox"|"button"|"statictext"|"paragraph"|"listitem"|"image"} role
  * @property {string} name the accessible name the fake browser reports (empty for tree rows, as Chromium does)
  * @property {string|null} text the static text below the element, or null when it has none
  * @property {string|null} href where activating the element navigates (links and tree rows)
@@ -221,10 +316,25 @@ export function buildElements(page, { path, draft, messages, splitMessages = fal
       // element, so no single accessibility node carries the joined text;
       // blank paragraphs render as elements without text, like the browser
       // reading an empty block.
+      // A line holding emoji renders as its text runs and emoji images, which
+      // Chromium exposes as separate StaticText and image nodes.
       const lines = text.split("\n").filter((line) => line !== "");
       elements.push({ key: `message:${i}`, role: "listitem", name: "", text: null, href: null, value: null, disabled: false, attributes: {} });
       lines.forEach((line, j) => {
-        elements.push({ key: `message:${i}:p${j}`, role: "statictext", name: line, text: line, href: null, value: null, disabled: false, attributes: {} });
+        const segments = emojiSegments(line);
+        if (segments.every((segment) => "text" in segment)) {
+          elements.push({ key: `message:${i}:p${j}`, role: "statictext", name: line, text: line, href: null, value: null, disabled: false, attributes: {} });
+          return;
+        }
+        segments.forEach((segment, k) => {
+          const key = `message:${i}:p${j}s${k}`;
+          if ("text" in segment) {
+            elements.push({ key, role: "statictext", name: segment.text, text: segment.text, href: null, value: null, disabled: false, attributes: {} });
+          } else {
+            const attributes = emojiImageAttributes(segment.emoji, "message");
+            elements.push({ key, role: "image", name: attributes["aria-label"] ?? "", text: null, href: null, value: null, disabled: false, attributes });
+          }
+        });
       });
       return;
     }
@@ -324,7 +434,12 @@ ${rows}
  * Render the page as static HTML with a small inline script so the composer
  * and send button behave like a message form and, in the tree shape, so a
  * click on a sidebar row navigates the way Slack's rows do (client-side
- * only; nothing is stored anywhere).
+ * only; nothing is stored anywhere). Like the real client, the script turns
+ * each SYNTHETIC_EMOJI character in the composer into an emoji image
+ * (emojiImageAttributes "composer") and renders a sent message as one
+ * rich-text section with `<br>` line breaks and emoji images
+ * (emojiImageAttributes "message"); which character an image stands for is
+ * kept in script memory only, never in the page.
  *
  * @param {SyntheticPage} page
  * @param {string} path
@@ -380,18 +495,85 @@ ${decoys}
   var composer = document.getElementById("composer");
   var send = document.getElementById("send");
   var messages = document.getElementById("messages");
+  var emoji = ${JSON.stringify(
+    [...SYNTHETIC_EMOJI]
+      .sort((a, b) => b.unicode.length - a.unicode.length)
+      .map((e) => ({ unicode: e.unicode, composer: emojiImageAttributes(e, "composer"), message: emojiImageAttributes(e, "message") })),
+  )};
+  var standsFor = new WeakMap();
+  function image(entry, where) {
+    var img = document.createElement("img");
+    Object.keys(entry[where]).forEach(function (name) { img.setAttribute(name, entry[where][name]); });
+    img.width = 16;
+    img.height = 16;
+    standsFor.set(img, entry.unicode);
+    return img;
+  }
+  function convert(root) {
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    var texts = [];
+    while (walker.nextNode()) texts.push(walker.currentNode);
+    texts.forEach(function (node) {
+      var value = node.nodeValue;
+      var parts = [];
+      var run = "";
+      for (var i = 0; i < value.length; ) {
+        var hit = null;
+        for (var k = 0; k < emoji.length; k++) if (value.startsWith(emoji[k].unicode, i)) { hit = emoji[k]; break; }
+        if (hit) { if (run) parts.push(document.createTextNode(run)); run = ""; parts.push(image(hit, "composer")); i += hit.unicode.length; }
+        else { run += value[i]; i += 1; }
+      }
+      if (parts.length === 0) return;
+      if (run) parts.push(document.createTextNode(run));
+      var parent = node.parentNode;
+      parts.forEach(function (part) { parent.insertBefore(part, node); });
+      parent.removeChild(node);
+    });
+  }
+  function draftText(root) {
+    var out = "";
+    (function walk(node) {
+      node.childNodes.forEach(function (child) {
+        if (child.nodeType === 3) out += child.nodeValue;
+        else if (child.nodeName === "BR") out += "\\n";
+        else if (child.nodeName === "IMG") out += standsFor.get(child) || "";
+        else {
+          var block = child.nodeName === "DIV" || child.nodeName === "P";
+          if (block && out !== "" && !out.endsWith("\\n")) out += "\\n";
+          walk(child);
+        }
+      });
+    })(root);
+    return out.replace(/\\n+$/, "");
+  }
   if (composer && send && messages) {
     composer.addEventListener("input", function () {
-      send.disabled = composer.textContent.trim() === "";
+      convert(composer);
+      send.disabled = draftText(composer).trim() === "";
     });
     send.addEventListener("click", function () {
       var li = document.createElement("li");
-      composer.innerText.split("\\n").forEach(function (line) {
-        var p = document.createElement("p");
-        p.setAttribute("aria-label", line);
-        p.textContent = line;
-        li.appendChild(p);
+      var blocks = document.createElement("div");
+      blocks.className = "c-message_kit__blocks";
+      var section = document.createElement("div");
+      section.className = "p-rich_text_section";
+      draftText(composer).split("\\n").forEach(function (line, index) {
+        if (index > 0) section.appendChild(document.createElement("br"));
+        var holder = document.createElement("span");
+        holder.textContent = line;
+        convert(holder);
+        holder.childNodes.forEach(function (part) {
+          if (part.nodeName !== "IMG") { section.appendChild(document.createTextNode(part.nodeValue)); return; }
+          var unicode = standsFor.get(part);
+          var entry = emoji.filter(function (e) { return e.unicode === unicode; })[0];
+          var wrapper = document.createElement("span");
+          wrapper.className = "c-emoji c-emoji__small";
+          wrapper.appendChild(image(entry, "message"));
+          section.appendChild(wrapper);
+        });
       });
+      blocks.appendChild(section);
+      li.appendChild(blocks);
       messages.appendChild(li);
       composer.textContent = "";
       send.disabled = true;

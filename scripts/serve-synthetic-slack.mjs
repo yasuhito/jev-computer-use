@@ -16,7 +16,7 @@
  * page's own script keeps posted messages in the DOM only.
  */
 import { createServer } from "node:http";
-import { loadSyntheticPage, renderHtml, SHAPES } from "../test/fixtures/synthetic-slack.mjs";
+import { loadSyntheticPage, renderHtml, SHAPES, EMOJI_ASSET_PREFIX, BLANK_GIF } from "../test/fixtures/synthetic-slack.mjs";
 
 const args = process.argv.slice(2);
 const portIndex = args.indexOf("--port");
@@ -36,6 +36,11 @@ const server = createServer((req, res) => {
   if (url.pathname === "/") {
     res.writeHead(302, { location: home });
     res.end();
+    return;
+  }
+  if (url.pathname.startsWith(EMOJI_ASSET_PREFIX)) {
+    res.writeHead(200, { "content-type": "image/gif" });
+    res.end(BLANK_GIF);
     return;
   }
   res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });

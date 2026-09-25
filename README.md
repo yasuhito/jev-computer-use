@@ -243,8 +243,8 @@ profile already recognized, followed by deterministic validation in code.
   before sending, the page must still be at the destination and the composer
   must still hold the text under the same paragraph-aware comparison.
 - **Exact text, read back, paragraph-aware.** The text is inserted with
-  `Input.insertText` (never key events) and read back from the accessibility
-  tree; any difference is `text_mismatch`. One canonical comparison
+  `Input.insertText` (never key events) and read back from the page;
+  any difference is `text_mismatch`. One canonical comparison
   (`paragraphEqual`/`paragraphLines` in `src/cdp/adapter.mjs`) serves the
   read-back, the send-time composer check, and the post verification: both
   strings are split on LF (U+000A), only the empty segments are dropped, and
@@ -265,6 +265,33 @@ profile already recognized, followed by deterministic validation in code.
   reordered, altered, or interleaved non-empty line never verifies; unnamed
   container nodes and unrelated rendered content around the message never
   break the run; otherwise the status is `unverified`.
+- **Emoji images, proven, never dropped.** Slack replaces a Unicode emoji in
+  the composer and in a posted message with an `<img>`, and Chromium never
+  reads an image into a contenteditable's accessibility value (with any
+  `alt`), so the read-back of the QA² report lacked 👤 ⚖️ 📅 and refused
+  before the send click (2026-09-25). A profile may therefore supply
+  `inlineText`, which proves the text an element stands for; the adapter then
+  reads the editable's DOM subtree with `DOM.describeNode` (already allowed;
+  no new CDP method) and reconstructs its text (`domText`: text nodes, `<br>`
+  and block boundaries as LF, proven elements as their text). The read-back
+  and the send-time check pass only when the subtree holds no unresolved
+  element (an image or other opaque element the profile cannot prove), and,
+  when it holds a proven element, the accessibility value equals the DOM text
+  without the proven elements and the DOM text with them equals the caller
+  text, both through `paragraphEqual`; without a proven element the
+  accessibility value alone decides as before. When the accessibility
+  sequence match finds no posted message, a message container whose DOM text
+  holds a proven element verifies only if its canonical lines carry the text
+  as one contiguous run and the run's non-emoji text also appears in the
+  container's accessibility text. The Slack profile (`slackEmojiText`) proves
+  an `<img>` or `data-stringify-emoji` element only for the closed
+  `SLACK_EMOJI` set (`:bust_in_silhouette:` 👤, `:scales:` ⚖️, `:date:` 📅)
+  when every nonempty identity field agrees: shortcode attributes (`data-id`,
+  `data-stringify-text`, `data-stringify-emoji`, and a shortcode `alt`).
+  No signal, disagreeing signals, an
+  unknown, custom, or skin-tone shortcode, or another emoji is unproven and
+  refuses (or leaves the post `unverified`); a missing, extra, changed, or
+  moved emoji is a text difference like any other.
 - **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
   unless the requested name is exactly the leading name of the chosen
@@ -277,16 +304,12 @@ profile already recognized, followed by deterministic validation in code.
   concurrent runs can both pass the non-atomic check. `jev-cu-report` checks
   both the current visible title and the idempotency key retained by older
   posts.
-- **Never a real Slack mutation in tests or smoke.** All tests use a fake CDP
-  session over a synthetic page model, and the live-transport smoke uses a
-  local synthetic page. A real Slack post requires a later, explicit
-  authorization naming the destination and content (or a separately approved
-  bounded daily-job mandate). This slice repairs the real-Slack destination
-  recognition failure; the existing Beelink observe-only verification then
-  recognized `qa2` successfully. The scheduling machinery exists as
-  `jev-cu-daily` (below); deploying it to the host, enabling the timer, and
-  the first real send remain separate, explicitly authorized steps. The QA2
-  data source and report calculation are `jev-cu-report` below.
+- **Never a real Slack mutation in tests or smoke.** Offline tests use a fake
+  CDP session over a synthetic page model; browser tests and the live-transport
+  smoke use a local synthetic page. A real Slack post requires explicit
+  authorization naming the destination and content (or an approved bounded
+  daily-job mandate). The QA2 data source and report calculation are
+  `jev-cu-report` below; the unattended wrapper is `jev-cu-daily`.
 
 ### Modes
 
@@ -363,7 +386,7 @@ selected row can sit under a popover, where the hit test rightly refuses).
 | `stale_snapshot` / `stale_target` | the decision is older than 20 s, or the session's target changed |
 | `changed_state` | URL, candidate set, or the selected element changed before acting |
 | `not_actionable` | the element is disabled or has no clickable box in the viewport |
-| `text_mismatch` | the composer is not absent, empty, or exactly one newline, or the read-back differs from the caller text beyond paragraph blank-line differences |
+| `text_mismatch` | the composer is not absent, empty, or exactly one newline, or the read-back differs from the caller text beyond paragraph blank-line differences, or holds an element (an emoji image) whose text the profile cannot prove |
 | `destination_mismatch` | the page is not at the selected destination, or (with `exactDestination`) the chosen link does not name the requested destination exactly |
 | `duplicate_post` | (with `duplicateMarker`) the destination already shows content carrying any marker |
 
@@ -407,7 +430,20 @@ be modeled in the same joined form (the default) or as the real client
 renders them in the message list, one element per paragraph
 (`splitMessages`), which is what the post verification's paragraph-sequence
 comparison handles. The safety comparisons are paragraph-aware for exactly
-this reason.
+this reason. Both the fake and the served page also turn the emoji of
+`SYNTHETIC_EMOJI` into images the way Slack does (an empty-`alt` image with
+`data-id`/`data-stringify-text` in the composer, a `data-stringify-emoji`
+image in a posted rich-text section), so the composer's accessibility value
+lacks them and only the proven DOM reading verifies; `👥` is a counterexample
+the profile cannot prove.
+
+`test/browser-e2e.test.mjs` runs the send workflow against the served
+`tree` page with the self-DM in a real headless Chromium (localhost only,
+offline label decisions) and checks the 2026-09-25 refusal with
+accessibility text alone, the proven send and post verification, the rendered
+four-line layout, and the duplicate rerun. It is skipped unless
+`JEV_CU_E2E_CHROME` names a Chromium binary (Node 22+):
+`JEV_CU_E2E_CHROME=$(command -v chromium) node --test test/browser-e2e.test.mjs`.
 
 ## jev-cu-report: QA2 daily New Users report
 
@@ -486,14 +522,16 @@ All dates are UTC calendar days. With the current clock:
   format. Both checks use the currently rendered accessibility tree, so this
   remains a best-effort duplicate defense, not durable exactly-once delivery.
 
-Slack message (mrkdwn, exactly four lines; no source footer or missing-row
-note; identical input gives identical output):
+Slack message (plain text, exactly four lines; no markup, source footer, or
+missing-row note; identical input gives identical output). The composer posts
+inserted text literally, so the message carries no `*` bold markers; the three
+Unicode emoji prefixes are the only decoration:
 
 ```
-*QA² 新規ユーザー｜9/24（UTC）*
-👤 *1人*（前日より *+1人*）
-⚖️ 直近7日平均 *2人* より *1人少なめ*（-50%）
-📅 直近7日（9/18→9/24）：*2 → 4 → 3 → 3 → 1 → 0 → 1人*
+QA² 新規ユーザー｜9/24（UTC）
+👤 1人（前日より +1人）
+⚖️ 直近7日平均 2人 より 1人少なめ（-50%）
+📅 直近7日（9/18→9/24）：2 → 4 → 3 → 3 → 1 → 0 → 1人
 ```
 
 Source auditability is retained in the `jev-cu-report` JSON payload's
@@ -604,12 +642,10 @@ through the programmatic CLI seam, so the test suite touches neither Snowflake
 nor Slack.
 
 A live read-only smoke (two `SELECT`s under process-scoped credentials, no
-Slack) is the remaining validation once the Unity share has propagated; it is
-not part of CI. Unattended execution is wrapped by `jev-cu-daily`, which
+Slack) is outside CI. Unattended execution is wrapped by `jev-cu-daily`, which
 serializes executions and adds durable per-date idempotency on top of the
 rendered-page check (it alone cannot prevent duplicates from concurrent runs
-or unloaded history). Deploying that wrapper to the host, enabling its timer,
-and the first real post are separate, explicitly authorized steps.
+or unloaded history).
 
 ## jev-cu-daily: unattended daily schedule
 

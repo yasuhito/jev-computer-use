@@ -104,10 +104,10 @@ test("dry-run against the fixture prints the typed report and the exact message,
   assert.equal(
     payload.message,
     [
-      `*${TITLE_MARKER}*`,
-      "👤 *1,234人*（前日より *+56人*）",
-      "⚖️ 直近7日平均 *1,035.4人* より *198.6人多め*（+19.2%）",
-      "📅 直近7日（9/14→9/20）：*1,300 → 1,220 → 1,185 → 1,160 → 1,205 → 1,178 → 1,234人*",
+      TITLE_MARKER,
+      "👤 1,234人（前日より +56人）",
+      "⚖️ 直近7日平均 1,035.4人 より 198.6人多め（+19.2%）",
+      "📅 直近7日（9/14→9/20）：1,300 → 1,220 → 1,185 → 1,160 → 1,205 → 1,178 → 1,234人",
     ].join("\n"),
   );
   assert.doesNotMatch(payload.message, new RegExp(KEY));

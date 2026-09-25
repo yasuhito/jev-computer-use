@@ -1,6 +1,8 @@
 /**
- * Deterministic Slack mrkdwn for a NewUsersReport: exactly four lines, no
- * mentions, links, or audit footer. The report source and full idempotency key
+ * Deterministic Slack text for a NewUsersReport: exactly four plain lines, no
+ * markup, mentions, links, or audit footer. The Slack composer posts inserted
+ * text literally, so bold markers such as `*` would appear as raw characters;
+ * the only non-ASCII decoration is the three Unicode emoji line prefixes. The report source and full idempotency key
  * remain in the CLI payload; duplicate checks use the visible title plus the
  * legacy key for posts created by earlier versions. Same report in, same
  * string out; formatting has no locale input.
@@ -52,8 +54,8 @@ function formatShortDate(date) {
 }
 
 /**
- * The plain rendered title is also the new-message duplicate marker. It is a
- * literal substring of the first Slack line after mrkdwn decoration is removed.
+ * The rendered title is also the new-message duplicate marker: it is exactly
+ * the first Slack line.
  * @param {NewUsersReport} report
  * @returns {string}
  */
@@ -89,9 +91,9 @@ export function renderSlackMessage(report, { seriesDays = DEFAULT_SERIES_DAYS } 
   const averagePercent = avg.deltaPercent === null ? "" : `（${formatPercent(avg.deltaPercent)}）`;
 
   return [
-    `*${slackMessageDuplicateMarker(report)}*`,
-    `👤 *${formatNumber(report.previousDay.newUsers)}人*（前日より *${formatDelta(day.delta)}人*）`,
-    `⚖️ 直近${avg.days}日平均 *${formatNumber(avg.baseline)}人* ${averageRelation} *${averageComparison}*${averagePercent}`,
-    `📅 直近${tail.length}日（${formatShortDate(firstDay.date)}→${formatShortDate(lastDay.date)}）：*${series}人*`,
+    slackMessageDuplicateMarker(report),
+    `👤 ${formatNumber(report.previousDay.newUsers)}人（前日より ${formatDelta(day.delta)}人）`,
+    `⚖️ 直近${avg.days}日平均 ${formatNumber(avg.baseline)}人 ${averageRelation} ${averageComparison}${averagePercent}`,
+    `📅 直近${tail.length}日（${formatShortDate(firstDay.date)}→${formatShortDate(lastDay.date)}）：${series}人`,
   ].join("\n");
 }

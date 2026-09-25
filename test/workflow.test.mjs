@@ -5,7 +5,7 @@ import { SLACK_PROFILE } from "../src/profiles/slack.mjs";
 import { runWorkflow, validateMessageText, validateDestination, destinationNameMatches, DEFAULT_BROWSE_MIN_CONFIDENCE } from "../src/workflow.mjs";
 import { ValidationError } from "../src/validate.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
-import { loadSyntheticPage } from "./fixtures/synthetic-slack.mjs";
+import { loadSyntheticPage, emojiImageAttributes } from "./fixtures/synthetic-slack.mjs";
 import { decideByLabel, decideFixed, fakeClock } from "./helpers.mjs";
 
 const ALLOWED = new Set(ALLOWED_CDP_METHODS);
@@ -532,6 +532,108 @@ test("send mode on the real-shaped page verifies split paragraph nodes and refus
   const again = await run(env, { mode: "send", destination: "qa2", text: REPORT_TEXT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: marker });
   assert.equal(again.status, "refused");
   assert.equal(again.refusal?.code, "duplicate_post");
+});
+
+/* ----------------------------- emoji report ----------------------------- */
+
+/** The approved four-line QA² layout with synthetic numbers. */
+const EMOJI_REPORT = [
+  "QA² 新規ユーザー｜9/24（UTC）",
+  "👤 1,234人（前日より +56人）",
+  "⚖️ 直近7日平均 1,035.4人 より 198.6人多め（+19.2%）",
+  "📅 直近7日（9/18→9/24）：1,300 → 1,220 → 1,185 → 1,160 → 1,205 → 1,178 → 1,234人",
+].join("\n");
+const EMOJI_MARKERS = ["QA² 新規ユーザー｜9/24（UTC）", "unity-new-users:24601:31001:2026-09-24"];
+
+/**
+ * @param {ReturnType<typeof setup>} env
+ * @param {Partial<Parameters<typeof runWorkflow>[0]>} [overrides]
+ */
+const sendEmojiToSelfDm = (env, overrides = {}) =>
+  run(env, {
+    mode: "send",
+    destination: SELF_DM_NAME,
+    text: EMOJI_REPORT,
+    decide: decideByLabel(SELF_DM_FLOW),
+    exactDestination: true,
+    duplicateMarker: EMOJI_MARKERS,
+    ...overrides,
+  });
+
+test("the four-line emoji report posts once to the exact self-DM: proven read-back, send-time check, and post verification", async () => {
+  const page = selfDmPage();
+  page.conversations.push({ id: "C0SAME", name: SELF_DM_NAME, kind: "channel" });
+  const env = setup({ page, splitMessages: true });
+  const report = await sendEmojiToSelfDm(env);
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
+  assert.equal(env.fake.currentUrl(), SELF_DM_URL);
+  assert.deepEqual(env.fake.currentMessages(), [EMOJI_REPORT]);
+  assert.deepEqual(env.fake.state.sideEffects, []);
+  const composer = /** @type {{inlineReplacements: number}|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
+  assert.equal(composer?.inlineReplacements, 3);
+  const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, true);
+  assert.equal(env.fake.currentMessages()[0]?.split("\n").length, 4);
+  // Already posted: the rerun refuses at the title marker before any input.
+  const again = await sendEmojiToSelfDm(env);
+  assert.equal(again.status, "refused");
+  assert.equal(again.refusal?.code, "duplicate_post");
+  assert.equal(env.fake.methodCalls("Input.insertText").length, 1);
+  assert.deepEqual(env.fake.currentMessages(), [EMOJI_REPORT]);
+});
+
+test("the four-line emoji report posts once to the qa2 channel on the real-shaped page", async () => {
+  const env = setup({ ...treeShape(), splitMessages: true });
+  const report = await run(env, { mode: "send", destination: "qa2", text: EMOJI_REPORT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: EMOJI_MARKERS });
+  assert.equal(report.status, "executed");
+  assert.deepEqual(env.fake.currentMessages(), [EMOJI_REPORT]);
+  assert.equal(env.fake.currentUrl(), TREE_QA2);
+});
+
+test("the emoji report refuses before send when accessibility text alone is compared (the 2026-09-25 refusal)", async () => {
+  const profile = { ...SLACK_PROFILE, name: "accessibility-only-test", inlineText: undefined };
+  const env = setup({ page: selfDmPage(), splitMessages: true }, { profile });
+  const report = await sendEmojiToSelfDm(env);
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "text_mismatch");
+  assert.equal(report.completed, "navigate");
+  assert.equal(env.fake.clicks().length, 2, "destination and composer focus only; no send click");
+  assert.deepEqual(env.fake.currentMessages(), []);
+  assert.equal(env.fake.currentDraft(), EMOJI_REPORT, "the unsent draft stays in the composer");
+});
+
+test("an emoji changed in the draft between typing and sending refuses before the send click", async () => {
+  const env = setup({ page: selfDmPage(), splitMessages: true });
+  const decide = decideByLabel(SELF_DM_FLOW, {
+    onCall: (index) => {
+      if (index === 2) env.fake.state.drafts.set("/client/T0SYNTH/D0SELF", EMOJI_REPORT.replace("📅", "👤"));
+    },
+  });
+  const report = await sendEmojiToSelfDm(env, { decide });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "text_mismatch");
+  assert.equal(report.completed, "draft");
+  assert.equal(env.fake.clicks().length, 2);
+  assert.deepEqual(env.fake.currentMessages(), []);
+});
+
+test("a posted emoji message rendered differently or unprovably stays unverified", async () => {
+  for (const arrange of [
+    (/** @type {ReturnType<typeof setup>} */ env) => { env.fake.state.transformPosted = (draft) => draft.replace("⚖️", "📅"); },
+    (/** @type {ReturnType<typeof setup>} */ env) => { env.fake.state.transformPosted = (draft) => draft.replace("👤 ", ""); },
+    (/** @type {ReturnType<typeof setup>} */ env) => {
+      env.fake.state.emojiAttributes = (emoji, where) => (where === "message" ? { alt: "", src: "/static/blank.png" } : emojiImageAttributes(emoji, where));
+    },
+  ]) {
+    const env = setup({ page: selfDmPage(), splitMessages: true });
+    arrange(env);
+    const report = await sendEmojiToSelfDm(env);
+    assert.equal(report.status, "unverified");
+    assert.equal(report.completed, "send");
+    const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+    assert.equal(posted?.verified, false);
+  }
 });
 
 /* ----------------------------- validation ----------------------------- */
