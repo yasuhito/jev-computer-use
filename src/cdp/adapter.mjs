@@ -4,7 +4,8 @@
  *
  * It knows only generic browser concepts: a page target, its accessibility
  * tree reduced to role/name/contents/url/value facts, element attributes for
- * the roles a profile asks for, box models, hit testing, and two typed input
+ * the roles a profile asks for, the text of a DOM subtree whose non-text
+ * elements (emoji images) a profile proves, box models, hit testing, and two typed input
  * actions (a single left click, and inserting exact text into the focused
  * editable). Application semantics (which links or rows are destinations,
  * which textbox is a composer, which button sends) and permissions come from
@@ -891,6 +892,10 @@ export class CdpAdapter {
    * interleaved non-empty line. Nodes that contribute no line never break a
    * run, so the unnamed containers around the paragraphs are unrelated, not
    * content. The matched nodes are the distinct nodes carrying the matched lines.
+   * When no accessibility run matches and the profile supplies inlineText,
+   * a container whose rendering replaced characters with proven elements
+   * (emoji images) can match through its DOM text instead; see
+   * #sequenceInProvenInlineText. The matched node is then the container.
    *
    * `contains` keeps its containment semantics: it compares the
    * whitespace-collapsed name against the whitespace-collapsed text and is

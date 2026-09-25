@@ -18,7 +18,7 @@ export const REFUSAL_CODES = Object.freeze({
   stale_target: "the session no longer refers to the target the decision was made on",
   changed_state: "the page changed between the decision and the execution gate",
   not_actionable: "the selected element is disabled or has no clickable box inside the viewport",
-  text_mismatch: "the composer text read back from the page differs from the caller text beyond paragraph blank-line differences",
+  text_mismatch: "the composer text read back from the page differs from the caller text beyond paragraph blank-line differences, or holds an element whose text the profile cannot prove",
   destination_mismatch: "the page is not at the selected destination",
   duplicate_post: "the page already shows content carrying the caller's duplicate marker",
 });
