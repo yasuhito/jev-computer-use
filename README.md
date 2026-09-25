@@ -291,7 +291,17 @@ profile already recognized, followed by deterministic validation in code.
   No signal, disagreeing signals, an
   unknown, custom, or skin-tone shortcode, or another emoji is unproven and
   refuses (or leaves the post `unverified`); a missing, extra, changed, or
-  moved emoji is a text difference like any other.
+  moved emoji is a text difference like any other. The one exception is a
+  localized `alt`: the ja-JP client posts
+  `<img data-stringify-type="emoji" data-stringify-emoji=":scales:" alt=":天秤:">`
+  (observed read-only on 2026-09-25), so a colon-wrapped `alt` of letters,
+  digits, and shortcode punctuation with at least one non-ASCII character is
+  skipped, not treated as an identity field, only when the element also
+  carries `data-stringify-type="emoji"` and a `data-stringify-emoji` in
+  `SLACK_EMOJI`. An ASCII `alt` is still an identity field that must agree,
+  and a localized `alt` without that stable identity proves nothing. This is
+  proven against posted-message attributes only; how the live ja-JP composer
+  renders its emoji images has not been observed.
 - **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
   unless the requested name is exactly the leading name of the chosen
@@ -433,7 +443,7 @@ comparison handles. The safety comparisons are paragraph-aware for exactly
 this reason. Both the fake and the served page also turn the emoji of
 `SYNTHETIC_EMOJI` into images the way Slack does (an empty-`alt` image with
 `data-id`/`data-stringify-text` in the composer, a `data-stringify-emoji`
-image in a posted rich-text section), so the composer's accessibility value
+image with the ja-JP localized `alt` in a posted rich-text section), so the composer's accessibility value
 lacks them and only the proven DOM reading verifies; `👥` is a counterexample
 the profile cannot prove.
 

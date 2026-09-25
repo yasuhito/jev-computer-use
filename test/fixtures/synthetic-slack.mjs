@@ -141,13 +141,16 @@ export function conversationPath(page, c) {
  * refusal). Shortcodes and asset file names follow Slack's standard emoji set;
  * `👥` is here as a counterexample the Slack profile cannot prove, and a bare
  * `⚖` (no U+FE0F) converts to the same `:scales:` image as `⚖️`.
+ * `localizedAlt` is the `alt` a ja-JP client gives a posted emoji image: the
+ * three QA² values are the ones observed read-only on the real client on
+ * 2026-09-25; the `👥` value is a synthetic stand-in.
  */
 export const SYNTHETIC_EMOJI = Object.freeze([
-  { unicode: "👤", shortcode: "bust_in_silhouette", file: "1f464", label: "bust in silhouette" },
-  { unicode: "⚖️", shortcode: "scales", file: "2696-fe0f", label: "scales" },
-  { unicode: "⚖", shortcode: "scales", file: "2696-fe0f", label: "scales" },
-  { unicode: "📅", shortcode: "date", file: "1f4c5", label: "calendar" },
-  { unicode: "👥", shortcode: "busts_in_silhouette", file: "1f465", label: "busts in silhouette" },
+  { unicode: "👤", shortcode: "bust_in_silhouette", file: "1f464", label: "bust in silhouette", localizedAlt: ":上半身シルエット_1:" },
+  { unicode: "⚖️", shortcode: "scales", file: "2696-fe0f", label: "scales", localizedAlt: ":天秤:" },
+  { unicode: "⚖", shortcode: "scales", file: "2696-fe0f", label: "scales", localizedAlt: ":天秤:" },
+  { unicode: "📅", shortcode: "date", file: "1f4c5", label: "calendar", localizedAlt: ":日付:" },
+  { unicode: "👥", shortcode: "busts_in_silhouette", file: "1f465", label: "busts in silhouette", localizedAlt: ":上半身シルエット_2:" },
 ]);
 
 /** Where the synthetic page serves its emoji images (Slack's standard asset path shape). */
@@ -202,9 +205,11 @@ export function withoutEmoji(text) {
 /**
  * The attributes of an emoji image. In the composer the image carries an
  * empty `alt` (no accessibility text) and its shortcode in `data-id` and
- * `data-stringify-text`; in a posted message it carries its shortcode in
- * `alt` and `data-stringify-emoji` and a descriptive `aria-label`. Both
- * point `src` at the standard emoji asset named by the code points.
+ * `data-stringify-text`; in a posted message it carries
+ * `data-stringify-type="emoji"`, its shortcode in `data-stringify-emoji`, the
+ * ja-JP localized name in `alt` (not a shortcode), and a descriptive
+ * `aria-label`, as observed on the real ja-JP client. Both point `src` at
+ * the standard emoji asset named by the code points.
  *
  * @param {SyntheticEmoji} emoji
  * @param {"composer"|"message"} where
@@ -218,7 +223,7 @@ export function emojiImageAttributes(emoji, where) {
   }
   return {
     class: "c-emoji__img",
-    alt: code,
+    alt: emoji.localizedAlt,
     "aria-label": `${emoji.label} emoji`,
     src,
     "data-stringify-type": "emoji",

@@ -361,6 +361,51 @@ test("slack emoji images are proven only from agreeing identity signals in the c
   assert.equal(SLACK_PROFILE.inlineText, slackEmojiText);
 });
 
+test("slack emoji images skip a ja-JP localized alt only beside a proven emoji type and data-stringify-emoji", () => {
+  /** @param {Record<string, string>} attributes @param {string} [nodeName] */
+  const text = (attributes, nodeName = "IMG") => slackEmojiText({ nodeName, attributes });
+  /** The posted-message attributes observed on the real ja-JP client, 2026-09-25. */
+  const posted = (/** @type {string} */ code, /** @type {string} */ alt) => ({
+    "data-stringify-type": "emoji",
+    "data-stringify-emoji": code,
+    alt,
+    "aria-label": "emoji",
+    src: "https://a.slack-edge.com/production-standard-emoji-assets/15.0/google-medium/x.png",
+  });
+  // Trigger: the localized alt. Each QA² emoji is proven from its stable shortcode.
+  assert.equal(text(posted(":bust_in_silhouette:", ":上半身シルエット_1:")), "👤");
+  assert.equal(text(posted(":scales:", ":天秤:")), "⚖️");
+  assert.equal(text(posted(":date:", ":日付:")), "📅");
+  // Contrast: an ASCII shortcode alt is still an identity field that must agree.
+  assert.equal(text(posted(":scales:", ":scales:")), "⚖️");
+  assert.equal(text(posted(":scales:", ":date:")), null);
+  assert.equal(text(posted(":scales:", ":busts_in_silhouette:")), null);
+  assert.equal(text(posted(":scales:", ":Scales:")), null);
+  assert.equal(text(posted(":scales:", "scales")), null);
+  // The stable identity must be present, known, and typed as an emoji.
+  const { "data-stringify-emoji": _code, ...noCode } = posted(":scales:", ":天秤:");
+  assert.equal(text(noCode), null);
+  assert.equal(text(posted("", ":天秤:")), null);
+  assert.equal(text(posted(":busts_in_silhouette:", ":上半身シルエット_2:")), null);
+  assert.equal(text(posted(":qa2_logo:", ":天秤:")), null);
+  assert.equal(text(posted(":scales::skin-tone-2:", ":天秤:")), null);
+  assert.equal(text(posted("天秤", ":天秤:")), null);
+  const { "data-stringify-type": _type, ...untyped } = posted(":scales:", ":天秤:");
+  assert.equal(text(untyped), null);
+  assert.equal(text({ ...posted(":scales:", ":天秤:"), "data-stringify-type": "image" }), null);
+  // Other identity fields must still agree with the stable shortcode.
+  assert.equal(text({ ...posted(":scales:", ":天秤:"), "data-id": ":date:" }), null);
+  assert.equal(text({ ...posted(":scales:", ":天秤:"), "data-stringify-text": ":scales:" }), "⚖️");
+  // Only a colon-wrapped localized name is skipped, never another shape.
+  assert.equal(text(posted(":scales:", "天秤")), null);
+  assert.equal(text(posted(":scales:", ":👥:")), null);
+  assert.equal(text(posted(":scales:", ":天秤: :date:")), null);
+  assert.equal(text(posted(":scales:", "⚖️")), null);
+  // A non-emoji image with a localized alt stays unproven.
+  assert.equal(text({ alt: ":天秤:", src: "/static/photo.png" }), null);
+  assert.equal(text({ alt: ":天秤:" }, "SPAN"), undefined);
+});
+
 test("DOM text uses only the supplied profile's inline element proof", () => {
   const root = { nodeType: 1, nodeName: "SPAN", children: [{ nodeType: 1, nodeName: "IMG", attributes: ["data-id", ":bust_in_silhouette:"] }] };
   assert.deepEqual(domText(root, slackEmojiText), { text: "👤", plain: "", replaced: 1, unresolved: 0 });

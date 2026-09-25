@@ -777,6 +777,53 @@ test("findText sequence does not verify a posted emoji message that differs, is 
   }
 });
 
+test("findText sequence verifies the ja-JP posted shape (localized alt) and refuses its disconfirming variants", async () => {
+  // The fixture's posted images are the real ja-JP shape: stable
+  // data-stringify-emoji beside a localized alt such as ":天秤:".
+  const ja = setup({ splitMessages: true });
+  ja.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT]);
+  const sample = /** @type {Parameters<typeof emojiImageAttributes>[0]} */ ({ unicode: "⚖️", shortcode: "scales", file: "2696-fe0f", label: "scales", localizedAlt: ":天秤:" });
+  assert.equal(emojiImageAttributes(sample, "message").alt, ":天秤:");
+  assert.deepEqual((await ja.adapter.findText(EMOJI_REPORT, { match: "sequence" })).backendNodeIds, [ja.fake.idFor("message:0")]);
+  /** @typedef {Parameters<typeof emojiImageAttributes>[0]} Emoji */
+  /** @param {(e: Emoji, attributes: Record<string, string>) => Record<string, string>} change */
+  const posted = (change) => (/** @type {Emoji} */ e, /** @type {"composer"|"message"} */ w) =>
+    w === "message" ? change(e, emojiImageAttributes(e, w)) : emojiImageAttributes(e, w);
+  // Contrast: the ASCII shortcode alt the fixture assumed before still verifies.
+  const ascii = setup({ splitMessages: true });
+  ascii.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT]);
+  ascii.fake.state.emojiAttributes = posted((e, a) => ({ ...a, alt: `:${e.shortcode}:` }));
+  assert.equal((await ascii.adapter.findText(EMOJI_REPORT, { match: "sequence" })).count, 1);
+  /** @type {Array<[string, (e: Emoji, a: Record<string, string>) => Record<string, string>]>} */
+  const cases = [
+    ["an ASCII shortcode alt that conflicts", (e, a) => ({ ...a, alt: e.shortcode === "date" ? ":scales:" : ":date:" })],
+    ["no data-stringify-emoji", (_e, { "data-stringify-emoji": _code, ...a }) => a],
+    ["an empty data-stringify-emoji", (_e, a) => ({ ...a, "data-stringify-emoji": "" })],
+    ["a changed data-stringify-emoji", (e, a) => ({ ...a, "data-stringify-emoji": e.shortcode === "date" ? ":scales:" : ":date:" })],
+    ["an unknown data-stringify-emoji", (_e, a) => ({ ...a, "data-stringify-emoji": ":busts_in_silhouette:" })],
+    ["no emoji type", (_e, { "data-stringify-type": _type, ...a }) => a],
+    ["a non-emoji image", () => ({ alt: ":天秤:", src: "/static/photo.png" })],
+  ];
+  for (const [name, change] of cases) {
+    const env = setup({ splitMessages: true });
+    env.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT]);
+    env.fake.state.emojiAttributes = posted(change);
+    assert.equal((await env.adapter.findText(EMOJI_REPORT, { match: "sequence" })).count, 0, name);
+  }
+  // Unknown emoji, reordered lines, and extra text in the ja-JP shape.
+  /** @type {Array<[string, string]>} */
+  const messages = [
+    ["an unknown emoji", EMOJI_REPORT.replace("👤", "👥")],
+    ["reordered emoji", EMOJI_REPORT.replace("👤", "@").replace("📅", "👤").replace("@", "📅")],
+    ["extra text inside a line", EMOJI_REPORT.replace("⚖️ ", "⚖️ 約")],
+  ];
+  for (const [name, message] of messages) {
+    const env = setup({ splitMessages: true });
+    env.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [message]);
+    assert.equal((await env.adapter.findText(EMOJI_REPORT, { match: "sequence" })).count, 0, name);
+  }
+});
+
 test("urlReached compares normalized URLs and accepts sub-paths only at a boundary", () => {
   assert.equal(urlReached("https://a/x/", "https://a/x"), true);
   assert.equal(urlReached("https://a/x/y", "https://a/x"), true);
