@@ -291,9 +291,9 @@ profile already recognized, followed by deterministic validation in code.
   No signal, disagreeing signals, an
   unknown, custom, or skin-tone shortcode, or another emoji is unproven and
   refuses (or leaves the post `unverified`); a missing, extra, changed, or
-  moved emoji is a text difference like any other. The exception is a
-  localized `alt`, in two observed shapes. The ja-JP client posts
-  `<img data-stringify-type="emoji" data-stringify-emoji=":scales:" alt=":天秤:">`
+  moved emoji is a text difference like any other. A localized `alt` is
+  excluded from the identity fields in two observed shapes. The ja-JP client
+  posts `<img data-stringify-type="emoji" data-stringify-emoji=":scales:" alt=":天秤:">`
   (observed read-only on 2026-09-25), so a colon-wrapped `alt` of letters,
   digits, and shortcode punctuation with at least one non-ASCII character is
   skipped, not treated as an identity field, only when the element also
@@ -303,13 +303,14 @@ profile already recognized, followed by deterministic validation in code.
   composer instead drafts
   `<img class="emoji" data-id=":scales:" data-stringify-text=":scales:" data-title=":天秤:" alt="天秤 絵文字">`
   (observed read-only on 2026-09-25, when the deployed 9ee0b41 matcher
-  refused that draft with `text_mismatch` before the send click), so a spoken `alt` of
-  space-separated words of letters, digits, and shortcode punctuation with at
-  least one non-ASCII character is skipped only on an `<img>` whose `data-id`
-  is in `SLACK_EMOJI` and whose `data-stringify-text` is exactly the same
-  shortcode. An emoji character, a shortcode, an ASCII label such as
-  `scales emoji`, `data-title`, and the asset never prove an emoji. Chromium
-  leaves such an `alt` out of the editable's accessibility value (checked in
+  refused that draft with `text_mismatch` before the send click), so a spoken
+  `alt` of space-separated words of letters, digits, and shortcode
+  punctuation with at least one non-ASCII character is skipped only on an
+  `<img>` whose `data-id` is in `SLACK_EMOJI` and whose `data-stringify-text` is exactly the same
+  shortcode. The spoken `alt`, `data-title`, and the asset cannot prove an
+  emoji on their own; an emoji character or an ASCII label such as
+  `scales emoji` in `alt` is never skipped. Chromium leaves the composer's
+  image `alt` out of the editable's accessibility value (checked in
   `test/browser-e2e.test.mjs`); the live composer read-back with this rule is
   not yet observed.
 - **Caller delivery guards.** A caller may pass two extra

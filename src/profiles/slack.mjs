@@ -116,11 +116,12 @@ function hasLocalizedAlt(nodeName, attributes) {
  * `data-stringify-text`, `data-stringify-emoji`, and `alt` identity fields
  * must be exact, agreeing shortcodes in SLACK_EMOJI; at least one is required.
  * An unknown, custom, combined, or disagreeing shortcode is unproven (null).
- * The one exception is a localized `alt`: a non-English client (observed on
- * ja-JP) names a posted emoji image in its own language (`:天秤:`) beside
- * the stable `data-stringify-emoji` shortcode. Such an `alt` is not an
- * identity field, so it is skipped, only when the element also carries
- * `data-stringify-type="emoji"` and a `data-stringify-emoji` shortcode in
+ * A localized `alt` is excluded from identity fields in two shapes. A
+ * non-English client (observed on ja-JP) names a posted emoji image in its
+ * own language (`:天秤:`) beside the stable `data-stringify-emoji` shortcode.
+ * Such an `alt` is not an identity field, so it is skipped only when the
+ * element also carries `data-stringify-type="emoji"` and a
+ * `data-stringify-emoji` shortcode in
  * SLACK_EMOJI (which the other fields must still agree with), and the `alt`
  * is one colon-wrapped name of letters, digits, and shortcode punctuation
  * with at least one non-ASCII character, so it can never be a competing
