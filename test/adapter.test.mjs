@@ -656,6 +656,25 @@ test("insertText verifies the four-line emoji report by proving each emoji image
   assert.equal(plain.inlineReplacements, 0);
 });
 
+test("insertText proves the ja-JP composer shape (spoken alt) and refuses it without the typed shortcode pair", async () => {
+  // The fixture's composer images are the real ja-JP shape: data-id and
+  // data-stringify-text beside a spoken alt such as "天秤 絵文字".
+  const sample = /** @type {Parameters<typeof emojiImageAttributes>[0]} */ ({ unicode: "⚖️", shortcode: "scales", file: "2696-fe0f", label: "scales", localizedAlt: ":天秤:" });
+  assert.equal(emojiImageAttributes(sample, "composer").alt, "天秤 絵文字");
+  assert.equal(emojiImageAttributes(sample, "composer")["data-id"], ":scales:");
+  const ja = await insertIntoGeneral(setup(), EMOJI_REPORT);
+  assert.equal(ja.verified, true);
+  assert.equal(ja.inlineReplacements, 3);
+  // Contrast: the empty alt the fixture assumed before still verifies.
+  const empty = setup();
+  empty.fake.state.emojiAttributes = (e, w) => ({ ...emojiImageAttributes(e, w), ...(w === "composer" ? { alt: "" } : {}) });
+  assert.equal((await insertIntoGeneral(empty, EMOJI_REPORT)).inlineReplacements, 3);
+  // A spoken alt never proves an emoji by itself, and the pair decides which emoji it is.
+  const swapped = setup();
+  swapped.fake.state.emojiAttributes = (e, w) => (w === "composer" && e.shortcode === "scales" ? { ...emojiImageAttributes(e, w), "data-id": ":date:", "data-stringify-text": ":date:" } : emojiImageAttributes(e, w));
+  await rejectsRefusal(insertIntoGeneral(swapped, EMOJI_REPORT), "text_mismatch");
+});
+
 test("insertText refuses missing, changed, moved, reordered, extra, and respelled emoji and unrelated text changes", async () => {
   /** @type {Array<[string, (draft: string) => string, string?]>} */
   const cases = [
@@ -697,6 +716,10 @@ test("insertText refuses emoji images whose identity is missing, conflicting, or
     ["a skin-tone shortcode", (e, w) => ({ ...emojiImageAttributes(e, w), "data-id": `:${e.shortcode}::skin-tone-2:` })],
     ["a custom shortcode", (e, w) => ({ ...emojiImageAttributes(e, w), "data-stringify-text": ":qa2_logo:" })],
     ["a different emoji character in alt", (e, w) => ({ ...emojiImageAttributes(e, w), alt: "👥" })],
+    ["a spoken alt without data-stringify-text", (e, w) => { const { "data-stringify-text": _t, ...a } = emojiImageAttributes(e, w); return a; }],
+    ["a spoken alt beside a disagreeing data-stringify-text", (e, w) => ({ ...emojiImageAttributes(e, w), "data-stringify-text": e.shortcode === "date" ? ":scales:" : ":date:" })],
+    ["an ASCII spoken alt", (e, w) => ({ ...emojiImageAttributes(e, w), alt: `${e.label} emoji` })],
+    ["only a localized label, title, and asset", (e, w) => { const { "data-id": _i, "data-stringify-text": _t, ...a } = emojiImageAttributes(e, w); return a; }],
   ];
   for (const [name, attributes] of cases) {
     const env = setup();

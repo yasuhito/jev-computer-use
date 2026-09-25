@@ -143,7 +143,9 @@ export function conversationPath(page, c) {
  * `⚖` (no U+FE0F) converts to the same `:scales:` image as `⚖️`.
  * `localizedAlt` is the `alt` a ja-JP client gives a posted emoji image: the
  * three QA² values are the ones observed read-only on the real client on
- * 2026-09-25; the `👥` value is a synthetic stand-in.
+ * 2026-09-25; the `👥` value is a synthetic stand-in. The composer's
+ * spoken label (composerAlt) is derived from it; only `天秤 絵文字` was
+ * observed on the real composer.
  */
 export const SYNTHETIC_EMOJI = Object.freeze([
   { unicode: "👤", shortcode: "bust_in_silhouette", file: "1f464", label: "bust in silhouette", localizedAlt: ":上半身シルエット_1:" },
@@ -203,13 +205,26 @@ export function withoutEmoji(text) {
 }
 
 /**
- * The attributes of an emoji image. In the composer the image carries an
- * empty `alt` (no accessibility text) and its shortcode in `data-id` and
- * `data-stringify-text`; in a posted message it carries
+ * The spoken label a ja-JP composer gives an emoji image: the localized
+ * name followed by 絵文字, as observed for ⚖️ (`天秤 絵文字`).
+ *
+ * @param {SyntheticEmoji} emoji
+ */
+export function composerAlt(emoji) {
+  return `${emoji.localizedAlt.slice(1, -1)} 絵文字`;
+}
+
+/**
+ * The attributes of an emoji image. In the composer the image carries the
+ * ja-JP spoken label in `alt` (composerAlt), the colon-wrapped localized
+ * name in `data-title`, its shortcode in `data-id` and
+ * `data-stringify-text`, and the asset as a CSS background, as observed on
+ * the real ja-JP composer on 2026-09-25; in a posted message it carries
  * `data-stringify-type="emoji"`, its shortcode in `data-stringify-emoji`, the
  * ja-JP localized name in `alt` (not a shortcode), and a descriptive
- * `aria-label`, as observed on the real ja-JP client. Both point `src` at
- * the standard emoji asset named by the code points.
+ * `aria-label`, as observed on the real ja-JP client. Both point at the
+ * standard emoji asset named by the code points (the composer through its
+ * background, the message through `src`).
  *
  * @param {SyntheticEmoji} emoji
  * @param {"composer"|"message"} where
@@ -219,7 +234,15 @@ export function emojiImageAttributes(emoji, where) {
   const code = `:${emoji.shortcode}:`;
   const src = `${EMOJI_ASSET_PREFIX}15.0/google-medium/${emoji.file}.png`;
   if (where === "composer") {
-    return { class: "c-emoji c-emoji__medium", alt: "", src, "data-id": code, "data-stringify-text": code };
+    return {
+      class: "emoji",
+      "data-id": code,
+      "data-stringify-text": code,
+      "data-title": emoji.localizedAlt,
+      alt: composerAlt(emoji),
+      src: `${EMOJI_ASSET_PREFIX}blank.gif`,
+      style: `background-image: url(${src})`,
+    };
   }
   return {
     class: "c-emoji__img",

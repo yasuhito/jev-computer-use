@@ -269,3 +269,57 @@ test("real Chromium: the emoji report posts once to the self-DM in the approved 
     await cleanup();
   }
 });
+
+test("real Chromium: the ja-JP composer's spoken emoji alt stays out of the read-back and a spoofed composer identity refuses before the send click", { skip: SKIP }, async () => {
+  /** @type {Array<[string, string]>} */
+  const spoofs = [
+    ["a disagreeing data-stringify-text", `img.setAttribute("data-stringify-text", ":date:")`],
+    ["no data-stringify-text", `img.removeAttribute("data-stringify-text")`],
+    ["an emoji character alt", `img.setAttribute("alt", "📅")`],
+    ["a swapped typed pair", `img.setAttribute("data-id", ":date:"); img.setAttribute("data-stringify-text", ":date:")`],
+  ];
+  for (const [name, spoof] of spoofs) {
+    const { session, cleanup } = await launch();
+    try {
+      // Rewrite the ⚖️ image as the page's script inserts it into the
+      // composer, on every document the workflow navigates to.
+      await session.send("Page.enable", {});
+      await session.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `new MutationObserver(function () {
+          document.querySelectorAll("#composer img[data-id=':scales:']:not([data-spoofed])").forEach(function (img) {
+            img.setAttribute("data-spoofed", "");
+            ${spoof};
+          });
+        }).observe(document, { subtree: true, childList: true })`,
+      });
+      const report = await send(adapterFor(session, SLACK_LOCAL_SYNTHETIC_PROFILE));
+      assert.equal(report.status, "refused", name);
+      assert.equal(report.refusal?.code, "text_mismatch", name);
+      assert.equal(report.completed, "navigate", name);
+      assert.deepEqual(await renderedMessages(session), [], name);
+      const { result } = await session.send("Runtime.evaluate", { returnByValue: true, expression: `document.querySelectorAll("#composer img[data-spoofed]").length` });
+      assert.equal(result.value, 1, `${name}: the spoof reached the composer`);
+    } finally {
+      await cleanup();
+    }
+  }
+  // Unspoofed, the composer images carry the observed spoken alt, which
+  // Chromium leaves out of the editable's accessibility value.
+  const { session, cleanup } = await launch();
+  try {
+    await session.send("Page.enable", {});
+    await session.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `new MutationObserver(function () {
+        var alts = Array.from(document.querySelectorAll("#composer img")).map(function (img) { return img.getAttribute("alt"); });
+        if (alts.length === 3) document.documentElement.setAttribute("data-composer-alts", JSON.stringify(alts));
+      }).observe(document, { subtree: true, childList: true })`,
+    });
+    const report = await send(adapterFor(session, SLACK_LOCAL_SYNTHETIC_PROFILE));
+    assert.equal(report.status, "executed", JSON.stringify(report.refusal));
+    const { result } = await session.send("Runtime.evaluate", { returnByValue: true, expression: `document.documentElement.getAttribute("data-composer-alts")` });
+    assert.deepEqual(JSON.parse(String(result.value)), ["上半身シルエット_1 絵文字", "天秤 絵文字", "日付 絵文字"]);
+    assert.equal((await renderedMessages(session)).length, 1);
+  } finally {
+    await cleanup();
+  }
+});

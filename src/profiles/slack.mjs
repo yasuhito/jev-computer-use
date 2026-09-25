@@ -85,22 +85,27 @@ const EMOJI_IDENTITY_ATTRIBUTES = ["data-id", "data-stringify-text", "data-strin
 /** A localized emoji name: colon-wrapped letters, digits, and shortcode punctuation. */
 const LOCALIZED_EMOJI_NAME = /^:[\p{L}\p{N}_+'-]+:$/u;
 const NON_ASCII = /\P{ASCII}/u;
+/** A spoken localized emoji label: space-separated words of letters, digits, and shortcode punctuation. */
+const LOCALIZED_EMOJI_LABEL = /^[\p{L}\p{N}_+'-]+(?: [\p{L}\p{N}_+'-]+)*$/u;
 
 /**
  * Whether an emoji element's `alt` is a localized name to skip rather than
  * an identity field (see slackEmojiText).
  *
+ * @param {string} nodeName
  * @param {Readonly<Record<string, string>>} attributes
  */
-function hasLocalizedAlt(attributes) {
+function hasLocalizedAlt(nodeName, attributes) {
   const alt = attributes.alt;
-  return (
-    alt !== undefined &&
-    attributes["data-stringify-type"] === "emoji" &&
-    SLACK_EMOJI.has(SLACK_SHORTCODE.exec(attributes["data-stringify-emoji"] ?? "")?.[1] ?? "") &&
-    LOCALIZED_EMOJI_NAME.test(alt) &&
-    NON_ASCII.test(alt)
-  );
+  if (alt === undefined || !NON_ASCII.test(alt)) return false;
+  const known = (/** @type {string|undefined} */ value) => SLACK_EMOJI.has(SLACK_SHORTCODE.exec(value ?? "")?.[1] ?? "");
+  const posted = attributes["data-stringify-type"] === "emoji" && known(attributes["data-stringify-emoji"]) && LOCALIZED_EMOJI_NAME.test(alt);
+  const composer =
+    nodeName === "IMG" &&
+    known(attributes["data-id"]) &&
+    attributes["data-stringify-text"] === attributes["data-id"] &&
+    LOCALIZED_EMOJI_LABEL.test(alt);
+  return posted || composer;
 }
 
 /**
@@ -111,15 +116,23 @@ function hasLocalizedAlt(attributes) {
  * `data-stringify-text`, `data-stringify-emoji`, and `alt` identity fields
  * must be exact, agreeing shortcodes in SLACK_EMOJI; at least one is required.
  * An unknown, custom, combined, or disagreeing shortcode is unproven (null).
- * The one exception is a localized `alt`: a non-English client (observed on
- * ja-JP) names a posted emoji image in its own language (`:天秤:`) beside
- * the stable `data-stringify-emoji` shortcode. Such an `alt` is not an
- * identity field, so it is skipped, only when the element also carries
- * `data-stringify-type="emoji"` and a `data-stringify-emoji` shortcode in
+ * A localized `alt` is excluded from identity fields in two shapes. A
+ * non-English client (observed on ja-JP) names a posted emoji image in its
+ * own language (`:天秤:`) beside the stable `data-stringify-emoji` shortcode.
+ * Such an `alt` is not an identity field, so it is skipped only when the
+ * element also carries `data-stringify-type="emoji"` and a
+ * `data-stringify-emoji` shortcode in
  * SLACK_EMOJI (which the other fields must still agree with), and the `alt`
  * is one colon-wrapped name of letters, digits, and shortcode punctuation
  * with at least one non-ASCII character, so it can never be a competing
- * Slack shortcode. An ASCII `alt` stays an identity field.
+ * Slack shortcode. The composer of the same client gives its emoji image a
+ * spoken label instead (`天秤 絵文字`, observed 2026-09-25) beside the
+ * stable `data-id` and `data-stringify-text` shortcodes; such an `alt` is
+ * skipped only on an `<img>` whose `data-id` is a shortcode in SLACK_EMOJI
+ * and whose `data-stringify-text` is exactly the same shortcode, and only
+ * when the `alt` is space-separated words of letters, digits, and shortcode
+ * punctuation with at least one non-ASCII character (never an emoji
+ * character or a shortcode). An ASCII `alt` stays an identity field.
  * The result is the SLACK_EMOJI spelling, so a caller text with a different
  * spelling (for example `⚖` without U+FE0F) does not match.
  *
@@ -132,7 +145,7 @@ export function slackEmojiText({ nodeName, attributes }) {
   if (!isEmojiElement) return undefined;
   /** @type {string[]} */
   const proofs = [];
-  const skipAlt = hasLocalizedAlt(attributes);
+  const skipAlt = hasLocalizedAlt(nodeName, attributes);
   for (const name of EMOJI_IDENTITY_ATTRIBUTES) {
     const value = attributes[name];
     if (value === undefined || value === "" || (name === "alt" && skipAlt)) continue;
