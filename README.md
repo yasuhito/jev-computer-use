@@ -261,12 +261,13 @@ profile already recognized, followed by deterministic validation in code.
   unless the requested name is exactly the leading name of the chosen
   destination's name (decoration such as `(channel)`, `（チャンネル）`, or
   `, 3 unread` may follow; `qa2-metrics-old` never matches `qa2-metrics`),
-  and `duplicateMarker`
-  refuses (`duplicate_post`) to draft or send when the destination's currently
-  rendered accessibility tree contains the marker. This duplicate check is
-  best-effort defense in depth: virtualized history may omit an earlier post,
-  and concurrent runs can both pass the non-atomic check. `jev-cu-report`
-  always sets both guards.
+  and `duplicateMarker` accepts one marker or a list and refuses
+  (`duplicate_post`) to draft or send when the destination's currently rendered
+  accessibility tree contains any marker. This duplicate check is best-effort
+  defense in depth: virtualized history may omit an earlier post, and
+  concurrent runs can both pass the non-atomic check. `jev-cu-report` checks
+  both the current visible title and the idempotency key retained by older
+  posts.
 - **Never a real Slack mutation in tests or smoke.** All tests use a fake CDP
   session over a synthetic page model, and the live-transport smoke uses a
   local synthetic page. A real Slack post requires a later, explicit
@@ -355,7 +356,7 @@ selected row can sit under a popover, where the hit test rightly refuses).
 | `not_actionable` | the element is disabled or has no clickable box in the viewport |
 | `text_mismatch` | the composer is not absent, empty, or exactly one newline, or the read-back differs from the caller text beyond paragraph blank-line differences |
 | `destination_mismatch` | the page is not at the selected destination, or (with `exactDestination`) the chosen link does not name the requested destination exactly |
-| `duplicate_post` | (with `duplicateMarker`) the destination already shows content carrying the marker |
+| `duplicate_post` | (with `duplicateMarker`) the destination already shows content carrying any marker |
 
 Exit codes: `0` for every workflow outcome including `refused` and
 `unverified`; `1` for runtime errors (`error.code` is `api`, `transport`, or
@@ -460,7 +461,7 @@ All dates are UTC calendar days. With the current clock:
 - **reportDate**: the last complete day, `today - 1`.
 - **New users on a day**: `COUNT(DISTINCT USER_ID)` of users whose player
   start date is that day. Days with no row count 0 and are listed in
-  `missingDates` (and in the message) so silence is visible.
+  `missingDates` for audit; the Slack message does not add a missing-row note.
 - **dayBefore**: `reportDate - 1`; `delta = report - dayBefore`;
   `deltaPercent = delta / dayBefore * 100`, null when `dayBefore` is 0.
 - **trailing7DayAverage**: mean of the 7 days `reportDate - 7 .. reportDate - 1`
@@ -470,23 +471,26 @@ All dates are UTC calendar days. With the current clock:
   otherwise `up` or `down` by sign; with a zero baseline, `up` if the day is
   positive, else `flat`.
 - **idempotencyKey**: `unity-new-users:<GAME_ID>:<ENVIRONMENT_ID>:<reportDate>`.
-  It is part of the message text and is the `duplicateMarker` handed to the
-  Slack workflow. The workflow refuses when that key is visible in the
-  currently rendered accessibility tree, but this is not durable exactly-once
-  delivery.
+  It remains in the typed report and CLI payload, but is no longer printed in
+  Slack. The workflow checks the plain visible title as the marker for new
+  posts and also checks this key to recognize posts from the previous message
+  format. Both checks use the currently rendered accessibility tree, so this
+  remains a best-effort duplicate defense, not durable exactly-once delivery.
 
-Message (plain text, no mrkdwn, no mentions, no links; identical input gives
-identical output):
+Slack message (mrkdwn, exactly four lines; no source footer or missing-row
+note; identical input gives identical output):
 
 ```
-QA2 new users (Live) for 2026-09-20 (UTC)
-New users on 2026-09-20: 1,234
-vs 2026-09-19 (1,178): +56 (+4.8%)
-vs trailing 7-day avg 2026-09-13..2026-09-19 (1,035.4): +198.6 (+19.2%), trend: up
-Last 7 days (UTC): 09-14 1,300 | 09-15 1,220 | 09-16 1,185 | 09-17 1,160 | 09-18 1,205 | 09-19 1,178 | 09-20 1,234
-Days with no rows (counted as 0): 2026-09-13
-Source: Unity Analytics Data Access (Snowflake) | key: unity-new-users:24601:31001:2026-09-20
+*QA² 新規ユーザー｜9/24（UTC）*
+👤 *1人*（前日より *+1人*）
+⚖️ 直近7日平均 *2人* より *1人少なめ*（-50%）
+📅 直近7日（9/18→9/24）：*2 → 4 → 3 → 3 → 1 → 0 → 1人*
 ```
+
+Source auditability is retained in the `jev-cu-report` JSON payload's
+`source` metadata and typed `report` (including `missingDates` and the full
+`idempotencyKey`); the unattended wrapper continues to scrub report details
+from its logs.
 
 ### Snowflake access and cost expectations
 
@@ -539,8 +543,8 @@ Send, only with an explicit request and an exact allowlist, through the
 the environment). The destination must equal one `--allow-destination`
 character for character; the workflow then additionally requires the chosen
 sidebar link to name it exactly, refuses if the currently rendered channel
-content shows the day's idempotency key, and keeps every freshness, read-back, and
-post-verification guard:
+content shows the visible report title or a legacy idempotency key, and keeps
+all freshness, read-back, and post-verification guards:
 
 ```sh
 node bin/jev-cu-report.mjs --mode send --destination qa2-metrics --allow-destination qa2-metrics
@@ -615,9 +619,9 @@ most one report, and it adds exactly the three properties a single-shot
   runtime error, refusal, `unverified`, `no_match`, `escalate` - writes no
   record, so a later run can resume the date without a second post: the
   workflow's duplicate-marker guard refuses to send again while this date's
-  idempotency key is visible in the channel. A corrupt or unreadable record
-  fails the run (exit 1) instead of being ignored: fail closed, never risk a
-  second post.
+  visible title or a legacy idempotency key is in the channel. A corrupt or
+  unreadable record fails the run (exit 1) instead of being ignored: fail
+  closed, never risk a second post.
 - **Single-run exclusion.** An exclusive lock file `<state-dir>/run.lock`
   (O_EXCL create, holding pid, start instant, and the kernel boot id) is
   held for the whole run. A live run makes a second invocation skip

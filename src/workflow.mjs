@@ -234,11 +234,12 @@ function composerHolds(snapshot, composerBackendNodeId, text) {
  * `exactDestination` requires the requested name to be exactly the leading
  * name of the chosen destination (see destinationNameMatches), so an
  * allowlisted name is never satisfied by a merely similar label;
- * `duplicateMarker` refuses to draft or send when the destination's currently
- * rendered accessibility tree contains the marker.
- * This is a best-effort preflight guard, not durable or atomic idempotency.
+ * `duplicateMarker` accepts one marker or a list and refuses to draft or send
+ * when the destination's currently rendered accessibility tree contains any
+ * of them. This is a best-effort preflight guard, not durable or atomic
+ * idempotency.
  *
- * @param {{mode: Mode, destination: string|null, text?: string|null, adapter: CdpAdapter, decide: DecideFn|null, threshold?: number, maxCandidates: number, exactDestination?: boolean, duplicateMarker?: string|null}} input
+ * @param {{mode: Mode, destination: string|null, text?: string|null, adapter: CdpAdapter, decide: DecideFn|null, threshold?: number, maxCandidates: number, exactDestination?: boolean, duplicateMarker?: string|string[]|null}} input
  * @returns {Promise<WorkflowReport>}
  */
 export async function runWorkflow({
@@ -308,6 +309,10 @@ export async function runWorkflow({
   };
 
   try {
+    const duplicateMarkers = duplicateMarker === null ? [] : Array.isArray(duplicateMarker) ? duplicateMarker : [duplicateMarker];
+    if (duplicateMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) {
+      throw new ValidationError("duplicateMarker must contain non-empty text", "invalid_text");
+    }
     const first = await adapter.observe();
     report.target = { id: first.target.id, url: first.target.url, title: first.target.title };
     if (mode === "observe") {
@@ -424,12 +429,12 @@ export async function runWorkflow({
     const atDest = await adapter.observe();
     const arrived = atDestination(atDest, destinationUrl);
     if (!arrived.ok) throw new RefusalError(arrived.code, arrived.reason);
-    if (duplicateMarker !== null) {
-      const existing = await adapter.findText(duplicateMarker, { match: "contains" });
-      report.steps.push({ step: "duplicate", phase: "verify", marker: duplicateMarker, found: existing.count });
+    for (const marker of duplicateMarkers) {
+      const existing = await adapter.findText(marker, { match: "contains" });
+      report.steps.push({ step: "duplicate", phase: "verify", marker, found: existing.count });
       if (existing.count > 0) {
         throw new RefusalError("duplicate_post", `the destination already shows ${existing.count} item(s) carrying the marker`, {
-          marker: duplicateMarker,
+          marker,
           count: existing.count,
         });
       }
