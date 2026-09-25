@@ -693,7 +693,7 @@ test("insertText refuses emoji images whose identity is missing, conflicting, or
   /** @type {Array<[string, (emoji: Parameters<typeof emojiImageAttributes>[0], where: "composer"|"message") => Record<string, string>]>} */
   const cases = [
     ["no identity attribute", () => ({ alt: "", src: "/static/blank.png" })],
-    ["conflicting shortcode and asset", (e, w) => ({ ...emojiImageAttributes(e, w), "data-id": ":date:" })],
+    ["conflicting shortcode fields", (e, w) => ({ ...emojiImageAttributes(e, w), "data-id": ":date:" })],
     ["a skin-tone shortcode", (e, w) => ({ ...emojiImageAttributes(e, w), "data-id": `:${e.shortcode}::skin-tone-2:` })],
     ["a custom shortcode", (e, w) => ({ ...emojiImageAttributes(e, w), "data-stringify-text": ":qa2_logo:" })],
     ["a different emoji character in alt", (e, w) => ({ ...emojiImageAttributes(e, w), alt: "👥" })],
@@ -705,11 +705,9 @@ test("insertText refuses emoji images whose identity is missing, conflicting, or
       throw new Error(`${name}: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
-  // Agreeing signals in other attributes are accepted: alt spelled as the
-  // character, with no data attributes at all.
   const env = setup();
   env.fake.state.emojiAttributes = (e) => ({ alt: e.unicode, src: `/production-standard-emoji-assets/15.0/google-medium/${e.file}.png` });
-  assert.equal((await insertIntoGeneral(env, "👤 1,234人")).inlineReplacements, 1);
+  await rejectsRefusal(insertIntoGeneral(env, "👤 1,234人"), "text_mismatch");
 });
 
 test("editorHolds refuses when the accessibility value disagrees with the editable's DOM text", async () => {

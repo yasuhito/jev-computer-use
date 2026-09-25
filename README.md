@@ -286,10 +286,9 @@ profile already recognized, followed by deterministic validation in code.
   container's accessibility text. The Slack profile (`slackEmojiText`) proves
   an `<img>` or `data-stringify-emoji` element only for the closed
   `SLACK_EMOJI` set (`:bust_in_silhouette:` 👤, `:scales:` ⚖️, `:date:` 📅)
-  when every identity signal agrees: shortcode attributes (`data-id`,
-  `data-stringify-text`, `data-stringify-emoji`, a shortcode `alt`), an
-  attribute spelled as the emoji itself, and a standard emoji asset `src`
-  whose file name is the code points. No signal, disagreeing signals, an
+  when every nonempty identity field agrees: shortcode attributes (`data-id`,
+  `data-stringify-text`, `data-stringify-emoji`, and a shortcode `alt`).
+  No signal, disagreeing signals, an
   unknown, custom, or skin-tone shortcode, or another emoji is unproven and
   refuses (or leaves the post `unverified`); a missing, extra, changed, or
   moved emoji is a text difference like any other.

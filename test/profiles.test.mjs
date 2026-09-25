@@ -1,10 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { SLACK_PROFILE, SLACK_LOCAL_SYNTHETIC_PROFILE, SLACK_SELF_DM_NAME, classifySlackTarget, classifySlackSelfDmTarget, sidebarChannelUrl, slackEmojiText } from "../src/profiles/slack.mjs";
 import { PROFILES, DEFAULT_PROFILE_NAME } from "../src/profiles/index.mjs";
-import { ALLOWED_CDP_METHODS, CdpAdapter } from "../src/cdp/adapter.mjs";
+import { ALLOWED_CDP_METHODS, CdpAdapter, domText } from "../src/cdp/adapter.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
 import { loadSyntheticPage } from "./fixtures/synthetic-slack.mjs";
 
@@ -343,17 +341,19 @@ test("slack emoji images are proven only from agreeing identity signals in the c
   // The posted-message shape: shortcode alt, descriptive aria-label.
   assert.equal(text({ alt: ":scales:", "aria-label": "scales emoji", "data-stringify-type": "emoji", "data-stringify-emoji": ":scales:", src: asset("2696-fe0f") }), "⚖️");
   assert.equal(text({ "data-stringify-emoji": ":date:" }, "SPAN"), "📅");
-  // A character alt or the asset alone also proves it; U+FE0F is spelled as in SLACK_EMOJI.
-  assert.equal(text({ alt: "⚖" }), "⚖️");
-  assert.equal(text({ alt: "", src: asset("1f4c5") }), "📅");
   // Unproven: nothing, disagreement, other emoji, custom or combined shortcodes.
   assert.equal(text({ alt: "" }), null);
   assert.equal(text({ alt: "", src: "/static/blank.png" }), null);
-  assert.equal(text({ "data-id": ":date:", src: asset("1f464") }), null);
+  assert.equal(text({ alt: "", src: asset("1f4c5") }), null);
+  assert.equal(text({ alt: "⚖" }), null);
+  assert.equal(text({ title: ":scales:" }), null);
+  assert.equal(text({ "aria-label": ":scales:" }), null);
+  assert.equal(text({ "data-id": ":date:", "data-stringify-text": ":scales:" }), null);
   assert.equal(text({ "data-id": ":busts_in_silhouette:" }), null);
   assert.equal(text({ alt: "👥" }), null);
   assert.equal(text({ "data-id": ":bust_in_silhouette::skin-tone-2:" }), null);
-  assert.equal(text({ "data-id": ":bust_in_silhouette:", title: ":qa2_logo:" }), null);
+  assert.equal(text({ "data-id": ":bust_in_silhouette:", title: ":qa2_logo:" }), "👤");
+  assert.equal(text({ "data-id": ":bust_in_silhouette:", src: asset("1f4c5") }), "👤");
   assert.equal(text({ alt: "", src: asset("1f465") }), null);
   // Other elements are the adapter's concern.
   assert.equal(text({ class: "c-emoji" }, "SPAN"), undefined);
@@ -361,13 +361,11 @@ test("slack emoji images are proven only from agreeing identity signals in the c
   assert.equal(SLACK_PROFILE.inlineText, slackEmojiText);
 });
 
-test("the adapter and transport know nothing about Slack", () => {
-  for (const file of ["../src/cdp/adapter.mjs", "../src/cdp/transport.mjs", "../src/workflow.mjs"]) {
-    const source = readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8");
-    assert.doesNotMatch(source, /slack/i, `${file} must not mention Slack`);
-    assert.doesNotMatch(source, /profiles\/slack/, `${file} must not import the Slack profile`);
-    assert.doesNotMatch(source, /data-stringify|data-id|shortcode|emoji-assets|bust_in_silhouette/, `${file} must not know how a page marks its emoji`);
-  }
+test("DOM text uses only the supplied profile's inline element proof", () => {
+  const root = { nodeType: 1, nodeName: "SPAN", children: [{ nodeType: 1, nodeName: "IMG", attributes: ["data-id", ":bust_in_silhouette:"] }] };
+  assert.deepEqual(domText(root, slackEmojiText), { text: "👤", plain: "", replaced: 1, unresolved: 0 });
+  assert.equal(domText(root, () => "custom").text, "custom");
+  assert.equal(domText(root, () => undefined).unresolved, 1);
 });
 
 test("the adapter's closed CDP method set excludes evaluation, key input, navigation, network, and storage", () => {

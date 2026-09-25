@@ -81,38 +81,18 @@ export const SLACK_EMOJI = Object.freeze(
 
 /** An attribute value that is exactly one Slack shortcode. */
 const SLACK_SHORTCODE = /^:([a-z0-9_+'-]+):$/;
-/** Any shortcode-looking text, including skin-tone and other combined forms. */
-const SLACK_SHORTCODE_LIKE = /:[^\s:]+:/;
-/** Slack's standard emoji asset path, whose file name is the code points. */
-const SLACK_EMOJI_ASSET = /\/[a-z0-9-]*emoji-assets\/(?:[^/]+\/)*([0-9a-f]{2,6}(?:-[0-9a-f]{2,6})*)\.(?:png|gif|webp)$/i;
-/** Attributes that never name the emoji itself. */
-const NON_IDENTITY_ATTRIBUTES = new Set(["class", "style", "id", "src", "width", "height", "loading", "decoding", "draggable", "role", "tabindex", "data-qa", "data-sk", "delay"]);
-
-/** @param {string} s */
-const withoutVariationSelector = (s) => s.replace(/\uFE0F/g, "");
-
-/** @param {string} value @returns {string|undefined} */
-function knownEmoji(value) {
-  const bare = withoutVariationSelector(value);
-  for (const unicode of SLACK_EMOJI.values()) if (withoutVariationSelector(unicode) === bare) return unicode;
-  return undefined;
-}
+const EMOJI_IDENTITY_ATTRIBUTES = ["data-id", "data-stringify-text", "data-stringify-emoji", "alt"];
 
 /**
  * The Unicode text a Slack emoji element stands for, proven from its
  * attributes. An element is an emoji element when it is an `<img>` or
  * carries `data-stringify-type="emoji"` or `data-stringify-emoji`; every
- * other element is left to the adapter (undefined). Each identity signal of
- * an emoji element - an attribute that is exactly a shortcode (`data-id`,
- * `data-stringify-emoji`, `data-stringify-text`, a shortcode `alt`, ...), an
- * attribute that is the emoji character itself, and a standard emoji asset
- * `src` whose file name spells the code points - must name the same
- * SLACK_EMOJI entry (U+FE0F aside), and at least one must exist. A signal
- * naming anything else (an unknown or custom shortcode, a skin-tone or
- * other combined form, another emoji character), disagreeing signals, or
- * no signal at all make the element unproven (null), never dropped or
- * guessed. The result is the SLACK_EMOJI spelling, so a caller text with a
- * different spelling (for example `⚖` without U+FE0F) does not match.
+ * other element is left to the adapter (undefined). Its nonempty `data-id`,
+ * `data-stringify-text`, `data-stringify-emoji`, and `alt` identity fields
+ * must be exact, agreeing shortcodes in SLACK_EMOJI; at least one is required.
+ * An unknown, custom, combined, or disagreeing shortcode is unproven (null).
+ * The result is the SLACK_EMOJI spelling, so a caller text with a different
+ * spelling (for example `⚖` without U+FE0F) does not match.
  *
  * @param {import("./profile.mjs").DomElementFacts} element
  * @returns {string|null|undefined}
@@ -123,36 +103,16 @@ export function slackEmojiText({ nodeName, attributes }) {
   if (!isEmojiElement) return undefined;
   /** @type {string[]} */
   const proofs = [];
-  let unproven = false;
-  for (const [name, value] of Object.entries(attributes)) {
-    if (NON_IDENTITY_ATTRIBUTES.has(name) || name === "data-stringify-type") continue;
+  for (const name of EMOJI_IDENTITY_ATTRIBUTES) {
+    const value = attributes[name];
+    if (value === undefined || value === "") continue;
     const shortcode = SLACK_SHORTCODE.exec(value)?.[1];
-    if (shortcode !== undefined) {
-      const unicode = SLACK_EMOJI.get(shortcode);
-      if (unicode === undefined) unproven = true;
-      else proofs.push(unicode);
-      continue;
-    }
-    if (SLACK_SHORTCODE_LIKE.test(value)) {
-      unproven = true;
-      continue;
-    }
-    const unicode = knownEmoji(value);
-    if (unicode !== undefined) proofs.push(unicode);
-    else if (/\p{Extended_Pictographic}/u.test(value)) unproven = true;
-  }
-  const src = attributes.src;
-  if (src !== undefined) {
-    const path = parseUrl(src)?.pathname ?? src.split(/[?#]/)[0] ?? "";
-    const file = SLACK_EMOJI_ASSET.exec(path)?.[1];
-    if (file !== undefined) {
-      const unicode = knownEmoji(String.fromCodePoint(...file.split("-").map((hex) => Number.parseInt(hex, 16))));
-      if (unicode === undefined) unproven = true;
-      else proofs.push(unicode);
-    }
+    const unicode = shortcode === undefined ? undefined : SLACK_EMOJI.get(shortcode);
+    if (unicode === undefined) return null;
+    proofs.push(unicode);
   }
   const first = proofs[0];
-  if (unproven || first === undefined || proofs.some((unicode) => unicode !== first)) return null;
+  if (first === undefined || proofs.some((unicode) => unicode !== first)) return null;
   return first;
 }
 
