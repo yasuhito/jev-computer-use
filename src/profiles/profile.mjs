@@ -33,6 +33,13 @@
  * @property {Readonly<Record<string, string>>} attributes element attributes, fetched only for roles the profile lists in attributeRoles; empty otherwise
  */
 
+/**
+ * One DOM element as the adapter hands it to a profile's inlineText.
+ * @typedef {object} DomElementFacts
+ * @property {string} nodeName upper-case element name, for example "IMG"
+ * @property {Readonly<Record<string, string>>} attributes
+ */
+
 /** @typedef {"destination"|"composer"|"send"|"control"} CandidateKind */
 
 /** Typed browser actions the adapter can perform. */
@@ -71,6 +78,7 @@ export const ACTIONS = Object.freeze({
  * @property {boolean} trusted execution is only ever possible under a trusted profile
  * @property {ReadonlySet<string>} [attributeRoles] accessibility roles whose element attributes the adapter fetches (one DOM.describeNode per node) before recognition; absent means none
  * @property {ReadonlySet<string>} [textSequenceContainerRoles] accessibility roles that bound one multi-node text sequence
+ * @property {(element: DomElementFacts) => string|null|undefined} [inlineText] proves the text an inline element stands for when the page renders text as a non-text element (an emoji image): a string is the proven text, null marks an element the profile recognizes but cannot prove, undefined leaves the element to the adapter's generic rules; absent means the adapter compares accessibility text only
  * @property {(target: ObservedTarget) => {ok: boolean, reason?: string}} checkTarget
  * @property {(node: ObservedNode, target: ObservedTarget) => Recognition|null} recognize
  * @property {(candidate: Candidate, action: ActionType, target: ObservedTarget) => {ok: boolean, reason?: string}} allowAction

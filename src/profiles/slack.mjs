@@ -17,6 +17,12 @@
  *   by `data-qa="texty_send_button"`; action: click, and only when the
  *   button is enabled.
  *
+ * Slack renders a standard Unicode emoji, in the composer and in a posted
+ * message, as an image whose accessibility text is empty or descriptive, so
+ * the profile's inlineText proves which emoji such an image stands for from
+ * its attributes (see slackEmojiText); only the closed SLACK_EMOJI set is
+ * provable.
+ *
  * Reactions, uploads, downloads, deletion, external links, sign-in or
  * sign-out, workspace and account settings, search, threads, every other
  * direct message, sidebar sections, and every other control are never
@@ -59,6 +65,96 @@ export const SLACK_SEND_NAME = /^send(\s+now)?$/i;
 
 /** Slack's locale-independent test hook on the composer's send button. */
 export const SLACK_SEND_QA = "texty_send_button";
+
+/**
+ * The standard Slack emoji the profile can prove, by shortcode, with the
+ * exact Unicode text each stands for: the line prefixes of the QA² report.
+ * The set is closed; an emoji image naming anything else is unproven.
+ */
+export const SLACK_EMOJI = Object.freeze(
+  new Map([
+    ["bust_in_silhouette", "👤"],
+    ["scales", "⚖️"],
+    ["date", "📅"],
+  ]),
+);
+
+/** An attribute value that is exactly one Slack shortcode. */
+const SLACK_SHORTCODE = /^:([a-z0-9_+'-]+):$/;
+/** Any shortcode-looking text, including skin-tone and other combined forms. */
+const SLACK_SHORTCODE_LIKE = /:[^\s:]+:/;
+/** Slack's standard emoji asset path, whose file name is the code points. */
+const SLACK_EMOJI_ASSET = /\/[a-z0-9-]*emoji-assets\/(?:[^/]+\/)*([0-9a-f]{2,6}(?:-[0-9a-f]{2,6})*)\.(?:png|gif|webp)$/i;
+/** Attributes that never name the emoji itself. */
+const NON_IDENTITY_ATTRIBUTES = new Set(["class", "style", "id", "src", "width", "height", "loading", "decoding", "draggable", "role", "tabindex", "data-qa", "data-sk", "delay"]);
+
+/** @param {string} s */
+const withoutVariationSelector = (s) => s.replace(/\uFE0F/g, "");
+
+/** @param {string} value @returns {string|undefined} */
+function knownEmoji(value) {
+  const bare = withoutVariationSelector(value);
+  for (const unicode of SLACK_EMOJI.values()) if (withoutVariationSelector(unicode) === bare) return unicode;
+  return undefined;
+}
+
+/**
+ * The Unicode text a Slack emoji element stands for, proven from its
+ * attributes. An element is an emoji element when it is an `<img>` or
+ * carries `data-stringify-type="emoji"` or `data-stringify-emoji`; every
+ * other element is left to the adapter (undefined). Each identity signal of
+ * an emoji element - an attribute that is exactly a shortcode (`data-id`,
+ * `data-stringify-emoji`, `data-stringify-text`, a shortcode `alt`, ...), an
+ * attribute that is the emoji character itself, and a standard emoji asset
+ * `src` whose file name spells the code points - must name the same
+ * SLACK_EMOJI entry (U+FE0F aside), and at least one must exist. A signal
+ * naming anything else (an unknown or custom shortcode, a skin-tone or
+ * other combined form, another emoji character), disagreeing signals, or
+ * no signal at all make the element unproven (null), never dropped or
+ * guessed. The result is the SLACK_EMOJI spelling, so a caller text with a
+ * different spelling (for example `⚖` without U+FE0F) does not match.
+ *
+ * @param {import("./profile.mjs").DomElementFacts} element
+ * @returns {string|null|undefined}
+ */
+export function slackEmojiText({ nodeName, attributes }) {
+  const isEmojiElement =
+    nodeName === "IMG" || attributes["data-stringify-type"] === "emoji" || attributes["data-stringify-emoji"] !== undefined;
+  if (!isEmojiElement) return undefined;
+  /** @type {string[]} */
+  const proofs = [];
+  let unproven = false;
+  for (const [name, value] of Object.entries(attributes)) {
+    if (NON_IDENTITY_ATTRIBUTES.has(name) || name === "data-stringify-type") continue;
+    const shortcode = SLACK_SHORTCODE.exec(value)?.[1];
+    if (shortcode !== undefined) {
+      const unicode = SLACK_EMOJI.get(shortcode);
+      if (unicode === undefined) unproven = true;
+      else proofs.push(unicode);
+      continue;
+    }
+    if (SLACK_SHORTCODE_LIKE.test(value)) {
+      unproven = true;
+      continue;
+    }
+    const unicode = knownEmoji(value);
+    if (unicode !== undefined) proofs.push(unicode);
+    else if (/\p{Extended_Pictographic}/u.test(value)) unproven = true;
+  }
+  const src = attributes.src;
+  if (src !== undefined) {
+    const path = parseUrl(src)?.pathname ?? src.split(/[?#]/)[0] ?? "";
+    const file = SLACK_EMOJI_ASSET.exec(path)?.[1];
+    if (file !== undefined) {
+      const unicode = knownEmoji(String.fromCodePoint(...file.split("-").map((hex) => Number.parseInt(hex, 16))));
+      if (unicode === undefined) unproven = true;
+      else proofs.push(unicode);
+    }
+  }
+  const first = proofs[0];
+  if (unproven || first === undefined || proofs.some((unicode) => unicode !== first)) return null;
+  return first;
+}
 
 /** Roles whose element attributes the profile needs before it can recognize a node. */
 const ATTRIBUTE_ROLES = Object.freeze(new Set(["treeitem", "textbox", "button"]));
@@ -168,6 +264,7 @@ export function createSlackProfile({ name, description, allowedOrigin }) {
     trusted: true,
     attributeRoles: ATTRIBUTE_ROLES,
     textSequenceContainerRoles: TEXT_SEQUENCE_CONTAINER_ROLES,
+    inlineText: slackEmojiText,
     checkTarget(target) {
       const parsed = parseUrl(target.url);
       if (!parsed || !allowedOrigin(parsed.origin)) {

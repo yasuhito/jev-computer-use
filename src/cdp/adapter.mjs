@@ -31,6 +31,7 @@ import { parseUrl } from "../profiles/profile.mjs";
 /** @typedef {import("../profiles/profile.mjs").ObservedNode} ObservedNode */
 /** @typedef {import("../profiles/profile.mjs").Candidate} Candidate */
 /** @typedef {import("../profiles/profile.mjs").ActionType} ActionType */
+/** @typedef {import("../profiles/profile.mjs").DomElementFacts} DomElementFacts */
 
 /**
  * A page-bound CDP session. The real one lives in transport.mjs; tests inject
@@ -57,7 +58,8 @@ import { parseUrl } from "../profiles/profile.mjs";
  * destination, the composer still holds the text under the canonical
  * paragraph-aware comparison) are revalidated
  * immediately before dispatch. Returning a refusal aborts the action.
- * @typedef {(fresh: Snapshot) => {ok: true} | {ok: false, code: import("../errors.mjs").RefusalCode, reason: string}} Precondition
+ * @typedef {{ok: true} | {ok: false, code: import("../errors.mjs").RefusalCode, reason: string}} Verdict
+ * @typedef {(fresh: Snapshot) => Verdict | Promise<Verdict>} Precondition
  */
 
 /** The only CDP methods this adapter can ever send. */
@@ -190,6 +192,94 @@ function reduceAttributes(described) {
     if (typeof name === "string" && typeof value === "string") attributes[name] = value;
   }
   return attributes;
+}
+
+/** Elements whose content is not text; unless a profile proves their text, they are unresolved. */
+const OPAQUE_ELEMENTS = new Set(["IMG", "SVG", "CANVAS", "PICTURE", "VIDEO", "AUDIO", "IFRAME", "OBJECT", "EMBED"]);
+/** Elements laid out as blocks: their boundaries are line boundaries. */
+const BLOCK_ELEMENTS = new Set([
+  "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DD", "DIV", "DL", "DT", "FIELDSET", "FIGCAPTION", "FIGURE",
+  "FOOTER", "FORM", "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "HR", "LI", "MAIN", "NAV", "OL", "P", "PRE",
+  "SECTION", "TABLE", "TBODY", "TD", "TFOOT", "TH", "THEAD", "TR", "UL",
+]);
+/** Elements that never render text. */
+const SKIPPED_ELEMENTS = new Set(["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT"]);
+/** Stands in for an unresolved element, on a line of its own, in DomText. */
+export const UNRESOLVED_INLINE = "\uFFFC";
+
+/**
+ * @typedef {object} DomText
+ * @property {string} text the subtree's text with every profile-proven inline element replaced by its proven text
+ * @property {string} plain the same text with those replacements left out, which is what the accessibility layer reads
+ * @property {number} replaced proven inline elements
+ * @property {number} unresolved opaque or unproven elements, each an UNRESOLVED_INLINE line in text and plain
+ */
+
+/**
+ * Reconstruct the text of a DOM subtree (a DOM.Node from DOM.describeNode
+ * with depth -1), below the root: text nodes contribute their data, `<br>`
+ * and block boundaries contribute LF, and an element the resolver proves
+ * contributes the proven text in place (and nothing to `plain`). An element
+ * the resolver marks unproven, an opaque element it leaves alone, and a
+ * proven element with text of its own are unresolved. Nothing else is
+ * normalized; callers compare the result through paragraphEqual or
+ * paragraphLines.
+ *
+ * @param {unknown} root
+ * @param {(element: DomElementFacts) => string|null|undefined} resolve
+ * @returns {DomText}
+ */
+export function domText(root, resolve) {
+  const out = { text: "", plain: "", replaced: 0, unresolved: 0 };
+  /** @param {string} both */
+  const append = (both) => {
+    out.text += both;
+    out.plain += both;
+  };
+  /** @param {unknown} node @returns {boolean} */
+  const hasText = (node) => {
+    const record = /** @type {Record<string, any>} */ (node);
+    if (record?.nodeType === 3) return typeof record.nodeValue === "string" && record.nodeValue !== "";
+    return Array.isArray(record?.children) && record.children.some(hasText);
+  };
+  /** @param {unknown} node */
+  const walkChildren = (node) => {
+    const children = /** @type {Record<string, any>} */ (node)?.children;
+    if (Array.isArray(children)) for (const child of children) walk(child);
+  };
+  /** @param {unknown} node */
+  const walk = (node) => {
+    if (typeof node !== "object" || node === null) return;
+    const record = /** @type {Record<string, any>} */ (node);
+    if (record.nodeType === 3) {
+      if (typeof record.nodeValue === "string") append(record.nodeValue);
+      return;
+    }
+    if (record.nodeType !== 1) return;
+    const nodeName = typeof record.nodeName === "string" ? record.nodeName.toUpperCase() : "";
+    if (SKIPPED_ELEMENTS.has(nodeName)) return;
+    if (nodeName === "BR") {
+      append("\n");
+      return;
+    }
+    const proven = resolve({ nodeName, attributes: Object.freeze(reduceAttributes(record)) });
+    if (typeof proven === "string" && proven !== "" && !proven.includes("\n") && !proven.includes(UNRESOLVED_INLINE) && !hasText(record)) {
+      out.text += proven;
+      out.replaced += 1;
+      return;
+    }
+    if (proven !== undefined || OPAQUE_ELEMENTS.has(nodeName)) {
+      append(`\n${UNRESOLVED_INLINE}\n`);
+      out.unresolved += 1;
+      return;
+    }
+    const block = BLOCK_ELEMENTS.has(nodeName);
+    if (block) append("\n");
+    walkChildren(record);
+    if (block) append("\n");
+  };
+  walkChildren(root);
+  return out;
 }
 
 /**
@@ -527,7 +617,7 @@ export class CdpAdapter {
       throw new RefusalError("unsupported_action", stillAllowed.reason ?? `${action} not allowed`);
     }
     if (require !== null) {
-      const verdict = require(fresh);
+      const verdict = await require(fresh);
       if (!verdict.ok) throw new RefusalError(verdict.code, verdict.reason);
     }
     return { fresh, candidate };
@@ -648,11 +738,73 @@ export class CdpAdapter {
   }
 
   /**
+   * Describe a node's whole DOM subtree, or null when the node is gone.
+   *
+   * @param {number} backendNodeId
+   * @returns {Promise<unknown>}
+   */
+  async #describeTree(backendNodeId) {
+    try {
+      const { node } = await this.#send("DOM.describeNode", { backendNodeId, depth: -1 });
+      return node ?? null;
+    } catch (err) {
+      if (err instanceof CdpProtocolError) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Whether an editable holds exactly the text, for the insertText read-back
+   * and the send-time composer check. Read-only.
+   *
+   * Without a profile inlineText, this is paragraphEqual on the
+   * accessibility value. With one, the editable's DOM is read too, because
+   * the browser never reads an image into an editable's accessibility
+   * value: a page that renders a typed emoji as an image reads back without
+   * it. The DOM text (domText) must hold no unresolved element; when it
+   * holds no proven inline element, the accessibility value alone decides as
+   * before; otherwise the accessibility value must equal the DOM text with
+   * the proven elements left out (so every non-emoji character is the
+   * browser's own reading, in place) and the DOM text with each proven
+   * element canonicalized to its text must equal the caller text. Both
+   * comparisons go through paragraphEqual, so a missing, extra, changed, or
+   * moved emoji or character refuses as before.
+   *
+   * @param {number} backendNodeId
+   * @param {string|null} value the editable's accessibility value
+   * @param {string} text
+   * @returns {Promise<{ok: boolean, inlineReplacements: number, reason: string|null}>}
+   */
+  async editorHolds(backendNodeId, value, text) {
+    const resolve = this.#profile.inlineText;
+    if (resolve === undefined) {
+      const ok = paragraphEqual(value, text);
+      return { ok, inlineReplacements: 0, reason: ok ? null : "the accessibility value differs from the text" };
+    }
+    const described = await this.#describeTree(backendNodeId);
+    if (described === null) return { ok: false, inlineReplacements: 0, reason: "the editable's contents cannot be described" };
+    const dom = domText(described, resolve);
+    if (dom.unresolved > 0) {
+      return { ok: false, inlineReplacements: dom.replaced, reason: `${dom.unresolved} element(s) in the editable have no provable text` };
+    }
+    if (dom.replaced === 0) {
+      const ok = paragraphEqual(value, text);
+      return { ok, inlineReplacements: 0, reason: ok ? null : "the accessibility value differs from the text" };
+    }
+    if (!paragraphEqual(value, dom.plain)) {
+      return { ok: false, inlineReplacements: dom.replaced, reason: "the accessibility value disagrees with the editable's DOM text" };
+    }
+    const ok = paragraphEqual(dom.text, text);
+    return { ok, inlineReplacements: dom.replaced, reason: ok ? null : "the editable's text with proven inline elements differs from the text" };
+  }
+
+  /**
    * Focus a decided editable candidate with one click and insert exact text,
-   * then read the value back from the accessibility tree and require it to
-   * equal the text under the canonical paragraph-aware comparison
-   * (paragraphEqual): only blank-line paragraph-boundary differences are
-   * tolerated, and every non-empty line must match exactly and in order.
+   * then read the value back and require it to equal the text under the
+   * canonical paragraph-aware comparison (editorHolds, built on
+   * paragraphEqual): only blank-line paragraph-boundary differences are
+   * tolerated, every non-empty line must match exactly and in order, and an
+   * inline element counts only as the text the profile proves it stands for.
    * The editable must be empty beforehand: an absent value, an empty string,
    * or Chromium's exact single-U+000A blank-editor artifact counts as empty;
    * every other value refuses.
@@ -661,7 +813,7 @@ export class CdpAdapter {
    * @param {string} candidateId
    * @param {string} text
    * @param {{require?: Precondition|null}} [options]
-   * @returns {Promise<{action: "insertText", candidateId: string, backendNodeId: number, point: {x: number, y: number}, textLength: number, readBack: string|null, verified: true}>}
+   * @returns {Promise<{action: "insertText", candidateId: string, backendNodeId: number, point: {x: number, y: number}, textLength: number, readBack: string|null, inlineReplacements: number, verified: true}>}
    */
   async insertText(snapshot, candidateId, text, { require = null } = {}) {
     const { fresh, candidate } = await this.#gate(snapshot, candidateId, "insertText", require);
@@ -680,15 +832,22 @@ export class CdpAdapter {
     const started = this.#now();
     /** @type {string|null} */
     let readBack;
+    /** @type {number} */
+    let inlineReplacements;
     for (;;) {
       const after = await this.observe();
       const current = after.candidates.find((c) => c.backendNodeId === candidate.backendNodeId);
       readBack = current ? current.value : null;
-      if (paragraphEqual(readBack, text)) break;
+      const check = current
+        ? await this.editorHolds(current.backendNodeId, readBack, text)
+        : { ok: false, inlineReplacements: 0, reason: "the editable is no longer observable" };
+      inlineReplacements = check.inlineReplacements;
+      if (check.ok) break;
       if (this.#now() - started >= this.#settleMs) {
         throw new RefusalError("text_mismatch", `${candidate.label} reads back differently from the requested text`, {
           readBack,
           expectedLength: text.length,
+          reason: check.reason,
         });
       }
       await this.#sleep(this.#settlePollMs);
@@ -700,6 +859,7 @@ export class CdpAdapter {
       point,
       textLength: text.length,
       readBack,
+      inlineReplacements,
       verified: true,
     };
   }
@@ -830,6 +990,10 @@ export class CdpAdapter {
           }
         }
       }
+      const resolve = this.#profile.inlineText;
+      if (hit.size === 0 && resolve !== undefined && !text.includes(UNRESOLVED_INLINE)) {
+        for (const id of await this.#sequenceInProvenInlineText(raws, byId, containerRoles, expected, resolve)) hit.add(id);
+      }
       const backendNodeIds = [...hit];
       return { count: backendNodeIds.length, backendNodeIds };
     }
@@ -846,6 +1010,65 @@ export class CdpAdapter {
       if (hit) backendNodeIds.push(node.backendNodeId);
     }
     return { count: backendNodeIds.length, backendNodeIds };
+  }
+
+  /**
+   * The sequence match for messages whose rendering replaced text with
+   * inline elements (a posted emoji is an image, so no accessibility node
+   * carries its character): within each profile-declared container (the
+   * last MAX_ATTRIBUTE_LOOKUPS of them, newest last), the container's DOM
+   * text (domText) with each proven element canonicalized must carry the
+   * expected lines as one contiguous run under the same line semantics as
+   * the accessibility path. Containers without a proven element are left to
+   * the accessibility path. An unresolved element is a line of its own
+   * that no expected line equals. The run's text without the proven
+   * elements, whitespace aside, must also appear in the container's
+   * accessibility text, so DOM text the browser does not expose never
+   * verifies a post. Returns the matching containers.
+   *
+   * @param {Record<string, any>[]} raws
+   * @param {Map<string, Record<string, any>>} byId
+   * @param {ReadonlySet<string>} containerRoles
+   * @param {string[]} expected
+   * @param {(element: DomElementFacts) => string|null|undefined} resolve
+   * @returns {Promise<number[]>}
+   */
+  async #sequenceInProvenInlineText(raws, byId, containerRoles, expected, resolve) {
+    /** @param {Record<string, any>|undefined} raw @returns {string} */
+    const staticText = (raw) => {
+      if (!raw) return "";
+      const role = typeof raw.role?.value === "string" ? raw.role.value.toLowerCase() : "";
+      if (role === "statictext") return typeof raw.name?.value === "string" ? raw.name.value : "";
+      return (Array.isArray(raw.childIds) ? raw.childIds : []).map((/** @type {unknown} */ id) => (typeof id === "string" ? staticText(byId.get(id)) : "")).join("");
+    };
+    const containers = raws
+      .filter((raw) => raw?.ignored !== true && typeof raw?.backendDOMNodeId === "number")
+      .filter((raw) => containerRoles.has(typeof raw.role?.value === "string" ? raw.role.value.toLowerCase() : ""))
+      .slice(-MAX_ATTRIBUTE_LOOKUPS);
+    /** @type {number[]} */
+    const found = [];
+    for (const raw of containers) {
+      const described = await this.#describeTree(raw.backendDOMNodeId);
+      if (described === null) continue;
+      const dom = domText(described, resolve);
+      if (dom.replaced === 0) continue;
+      // Proven replacements never hold LF, so both strings split alike.
+      const plainLines = dom.plain.split("\n");
+      const lines = dom.text
+        .split("\n")
+        .map((line, index) => ({ line, plain: plainLines[index] ?? "" }))
+        .filter((entry) => entry.line !== "");
+      const exposed = staticText(raw).replace(/\s+/g, "");
+      for (let start = 0; start + expected.length <= lines.length; start++) {
+        if (!expected.every((line, index) => lines[start + index]?.line === line)) continue;
+        const runPlain = lines.slice(start, start + expected.length).map((entry) => entry.plain).join("").replace(/\s+/g, "");
+        if (exposed.includes(runPlain)) {
+          found.push(raw.backendDOMNodeId);
+          break;
+        }
+      }
+    }
+    return found;
   }
 
   /**

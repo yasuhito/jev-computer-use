@@ -132,10 +132,100 @@ export function conversationPath(page, c) {
 }
 
 /**
+ * Unicode emoji the synthetic client converts into image elements, the way
+ * the real Slack client replaces an emoji character typed or inserted into
+ * its composer (and rendered in a posted message) with an `<img>`. Chromium
+ * never reads an `<img>` into a contenteditable's accessibility value, and
+ * the composer's emoji images carry an empty `alt`, so the accessibility
+ * read-back of a draft holding emoji lacks them (the 2026-09-25 self-DM
+ * refusal). Shortcodes and asset file names follow Slack's standard emoji set;
+ * `👥` is here as a counterexample the Slack profile cannot prove, and a bare
+ * `⚖` (no U+FE0F) converts to the same `:scales:` image as `⚖️`.
+ */
+export const SYNTHETIC_EMOJI = Object.freeze([
+  { unicode: "👤", shortcode: "bust_in_silhouette", file: "1f464", label: "bust in silhouette" },
+  { unicode: "⚖️", shortcode: "scales", file: "2696-fe0f", label: "scales" },
+  { unicode: "⚖", shortcode: "scales", file: "2696-fe0f", label: "scales" },
+  { unicode: "📅", shortcode: "date", file: "1f4c5", label: "calendar" },
+  { unicode: "👥", shortcode: "busts_in_silhouette", file: "1f465", label: "busts in silhouette" },
+]);
+
+/** @typedef {(typeof SYNTHETIC_EMOJI)[number]} SyntheticEmoji */
+/** @typedef {{text: string} | {emoji: SyntheticEmoji}} Segment */
+
+/**
+ * Split one line into text runs and the emoji the synthetic client converts.
+ * Longer spellings win, so `⚖️` is one emoji, not `⚖` plus U+FE0F.
+ *
+ * @param {string} line
+ * @returns {Segment[]}
+ */
+export function emojiSegments(line) {
+  const byLength = [...SYNTHETIC_EMOJI].sort((a, b) => b.unicode.length - a.unicode.length);
+  /** @type {Segment[]} */
+  const segments = [];
+  let text = "";
+  for (let i = 0; i < line.length; ) {
+    const emoji = byLength.find((e) => line.startsWith(e.unicode, i));
+    if (emoji) {
+      if (text !== "") segments.push({ text });
+      text = "";
+      segments.push({ emoji });
+      i += emoji.unicode.length;
+    } else {
+      text += line[i];
+      i += 1;
+    }
+  }
+  if (text !== "") segments.push({ text });
+  return segments;
+}
+
+/**
+ * Remove every converted emoji: what Chromium's accessibility layer reads
+ * from text in which the client replaced the emoji with images.
+ *
+ * @param {string} text
+ */
+export function withoutEmoji(text) {
+  return text
+    .split("\n")
+    .map((line) => emojiSegments(line).map((segment) => ("text" in segment ? segment.text : "")).join(""))
+    .join("\n");
+}
+
+/**
+ * The attributes of an emoji image. In the composer the image carries an
+ * empty `alt` (no accessibility text) and its shortcode in `data-id` and
+ * `data-stringify-text`; in a posted message it carries its shortcode in
+ * `alt` and `data-stringify-emoji` and a descriptive `aria-label`. Both
+ * point `src` at the standard emoji asset named by the code points.
+ *
+ * @param {SyntheticEmoji} emoji
+ * @param {"composer"|"message"} where
+ * @returns {Record<string, string>}
+ */
+export function emojiImageAttributes(emoji, where) {
+  const code = `:${emoji.shortcode}:`;
+  const src = `/production-standard-emoji-assets/15.0/google-medium/${emoji.file}.png`;
+  if (where === "composer") {
+    return { class: "c-emoji c-emoji__medium", alt: "", src, "data-id": code, "data-stringify-text": code };
+  }
+  return {
+    class: "c-emoji__img",
+    alt: code,
+    "aria-label": `${emoji.label} emoji`,
+    src,
+    "data-stringify-type": "emoji",
+    "data-stringify-emoji": code,
+  };
+}
+
+/**
  * One element in document order. `key` is stable across renders.
  * @typedef {object} Element
  * @property {string} key
- * @property {"heading"|"link"|"treeitem"|"textbox"|"button"|"statictext"|"paragraph"|"listitem"} role
+ * @property {"heading"|"link"|"treeitem"|"textbox"|"button"|"statictext"|"paragraph"|"listitem"|"image"} role
  * @property {string} name the accessible name the fake browser reports (empty for tree rows, as Chromium does)
  * @property {string|null} text the static text below the element, or null when it has none
  * @property {string|null} href where activating the element navigates (links and tree rows)
@@ -221,10 +311,25 @@ export function buildElements(page, { path, draft, messages, splitMessages = fal
       // element, so no single accessibility node carries the joined text;
       // blank paragraphs render as elements without text, like the browser
       // reading an empty block.
+      // A line holding emoji renders as its text runs and emoji images, which
+      // Chromium exposes as separate StaticText and image nodes.
       const lines = text.split("\n").filter((line) => line !== "");
       elements.push({ key: `message:${i}`, role: "listitem", name: "", text: null, href: null, value: null, disabled: false, attributes: {} });
       lines.forEach((line, j) => {
-        elements.push({ key: `message:${i}:p${j}`, role: "statictext", name: line, text: line, href: null, value: null, disabled: false, attributes: {} });
+        const segments = emojiSegments(line);
+        if (segments.every((segment) => "text" in segment)) {
+          elements.push({ key: `message:${i}:p${j}`, role: "statictext", name: line, text: line, href: null, value: null, disabled: false, attributes: {} });
+          return;
+        }
+        segments.forEach((segment, k) => {
+          const key = `message:${i}:p${j}s${k}`;
+          if ("text" in segment) {
+            elements.push({ key, role: "statictext", name: segment.text, text: segment.text, href: null, value: null, disabled: false, attributes: {} });
+          } else {
+            const attributes = emojiImageAttributes(segment.emoji, "message");
+            elements.push({ key, role: "image", name: attributes["aria-label"] ?? "", text: null, href: null, value: null, disabled: false, attributes });
+          }
+        });
       });
       return;
     }
