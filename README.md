@@ -243,8 +243,8 @@ profile already recognized, followed by deterministic validation in code.
   before sending, the page must still be at the destination and the composer
   must still hold the text under the same paragraph-aware comparison.
 - **Exact text, read back, paragraph-aware.** The text is inserted with
-  `Input.insertText` (never key events) and read back from the accessibility
-  tree; any difference is `text_mismatch`. One canonical comparison
+  `Input.insertText` (never key events) and read back from the page;
+  any difference is `text_mismatch`. One canonical comparison
   (`paragraphEqual`/`paragraphLines` in `src/cdp/adapter.mjs`) serves the
   read-back, the send-time composer check, and the post verification: both
   strings are split on LF (U+000A), only the empty segments are dropped, and
@@ -304,16 +304,12 @@ profile already recognized, followed by deterministic validation in code.
   concurrent runs can both pass the non-atomic check. `jev-cu-report` checks
   both the current visible title and the idempotency key retained by older
   posts.
-- **Never a real Slack mutation in tests or smoke.** All tests use a fake CDP
-  session over a synthetic page model, and the live-transport smoke uses a
-  local synthetic page. A real Slack post requires a later, explicit
-  authorization naming the destination and content (or a separately approved
-  bounded daily-job mandate). This slice repairs the real-Slack destination
-  recognition failure; the existing Beelink observe-only verification then
-  recognized `qa2` successfully. The scheduling machinery exists as
-  `jev-cu-daily` (below); deploying it to the host, enabling the timer, and
-  the first real send remain separate, explicitly authorized steps. The QA2
-  data source and report calculation are `jev-cu-report` below.
+- **Never a real Slack mutation in tests or smoke.** Offline tests use a fake
+  CDP session over a synthetic page model; browser tests and the live-transport
+  smoke use a local synthetic page. A real Slack post requires explicit
+  authorization naming the destination and content (or an approved bounded
+  daily-job mandate). The QA2 data source and report calculation are
+  `jev-cu-report` below; the unattended wrapper is `jev-cu-daily`.
 
 ### Modes
 
@@ -646,12 +642,10 @@ through the programmatic CLI seam, so the test suite touches neither Snowflake
 nor Slack.
 
 A live read-only smoke (two `SELECT`s under process-scoped credentials, no
-Slack) is the remaining validation once the Unity share has propagated; it is
-not part of CI. Unattended execution is wrapped by `jev-cu-daily`, which
+Slack) is outside CI. Unattended execution is wrapped by `jev-cu-daily`, which
 serializes executions and adds durable per-date idempotency on top of the
 rendered-page check (it alone cannot prevent duplicates from concurrent runs
-or unloaded history). Deploying that wrapper to the host, enabling its timer,
-and the first real post are separate, explicitly authorized steps.
+or unloaded history).
 
 ## jev-cu-daily: unattended daily schedule
 
