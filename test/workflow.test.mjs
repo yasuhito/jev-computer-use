@@ -625,6 +625,13 @@ test("a posted emoji message rendered differently or unprovably stays unverified
     (/** @type {ReturnType<typeof setup>} */ env) => {
       env.fake.state.emojiAttributes = (emoji, where) => (where === "message" ? { alt: "", src: "/static/blank.png" } : emojiImageAttributes(emoji, where));
     },
+    // A ja-JP localized alt alone, without the stable data-stringify-emoji, proves nothing.
+    (/** @type {ReturnType<typeof setup>} */ env) => {
+      env.fake.state.emojiAttributes = (emoji, where) => {
+        const { "data-stringify-emoji": _code, ...rest } = emojiImageAttributes(emoji, where);
+        return where === "message" ? rest : emojiImageAttributes(emoji, where);
+      };
+    },
   ]) {
     const env = setup({ page: selfDmPage(), splitMessages: true });
     arrange(env);

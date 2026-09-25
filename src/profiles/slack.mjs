@@ -82,6 +82,26 @@ export const SLACK_EMOJI = Object.freeze(
 /** An attribute value that is exactly one Slack shortcode. */
 const SLACK_SHORTCODE = /^:([a-z0-9_+'-]+):$/;
 const EMOJI_IDENTITY_ATTRIBUTES = ["data-id", "data-stringify-text", "data-stringify-emoji", "alt"];
+/** A localized emoji name: colon-wrapped letters, digits, and shortcode punctuation. */
+const LOCALIZED_EMOJI_NAME = /^:[\p{L}\p{N}_+'-]+:$/u;
+const NON_ASCII = /\P{ASCII}/u;
+
+/**
+ * Whether an emoji element's `alt` is a localized name to skip rather than
+ * an identity field (see slackEmojiText).
+ *
+ * @param {Readonly<Record<string, string>>} attributes
+ */
+function hasLocalizedAlt(attributes) {
+  const alt = attributes.alt;
+  return (
+    alt !== undefined &&
+    attributes["data-stringify-type"] === "emoji" &&
+    SLACK_EMOJI.has(SLACK_SHORTCODE.exec(attributes["data-stringify-emoji"] ?? "")?.[1] ?? "") &&
+    LOCALIZED_EMOJI_NAME.test(alt) &&
+    NON_ASCII.test(alt)
+  );
+}
 
 /**
  * The Unicode text a Slack emoji element stands for, proven from its
@@ -91,6 +111,15 @@ const EMOJI_IDENTITY_ATTRIBUTES = ["data-id", "data-stringify-text", "data-strin
  * `data-stringify-text`, `data-stringify-emoji`, and `alt` identity fields
  * must be exact, agreeing shortcodes in SLACK_EMOJI; at least one is required.
  * An unknown, custom, combined, or disagreeing shortcode is unproven (null).
+ * The one exception is a localized `alt`: a non-English client (observed on
+ * ja-JP) names a posted emoji image in its own language (`:天秤:`) beside
+ * the stable `data-stringify-emoji` shortcode. Such an `alt` is not an
+ * identity field, so it is skipped, only when the element also carries
+ * `data-stringify-type="emoji"` and a `data-stringify-emoji` shortcode in
+ * SLACK_EMOJI (which the other fields must still agree with), and the `alt`
+ * is one colon-wrapped name of letters, digits, and shortcode punctuation
+ * with at least one non-ASCII character, so it can never be a competing
+ * Slack shortcode. An ASCII `alt` stays an identity field.
  * The result is the SLACK_EMOJI spelling, so a caller text with a different
  * spelling (for example `⚖` without U+FE0F) does not match.
  *
@@ -103,9 +132,10 @@ export function slackEmojiText({ nodeName, attributes }) {
   if (!isEmojiElement) return undefined;
   /** @type {string[]} */
   const proofs = [];
+  const skipAlt = hasLocalizedAlt(attributes);
   for (const name of EMOJI_IDENTITY_ATTRIBUTES) {
     const value = attributes[name];
-    if (value === undefined || value === "") continue;
+    if (value === undefined || value === "" || (name === "alt" && skipAlt)) continue;
     const shortcode = SLACK_SHORTCODE.exec(value)?.[1];
     const unicode = shortcode === undefined ? undefined : SLACK_EMOJI.get(shortcode);
     if (unicode === undefined) return null;
