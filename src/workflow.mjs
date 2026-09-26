@@ -195,20 +195,30 @@ function atDestination(snapshot, destinationUrl) {
  * read every paragraph boundary as a blank line, so only blank-line
  * differences are tolerated, every non-empty line must match exactly and in
  * order, and an inline element (an emoji image) counts only as the text the
- * profile proves it stands for.
+ * profile proves it stands for. A refusal names where it happened (`stage`:
+ * the check before the send decision or the one inside the send click's gate)
+ * and which check refused (`check`, from EDITOR_CHECKS).
  *
  * @param {CdpAdapter} adapter
  * @param {Snapshot} snapshot
  * @param {number} composerBackendNodeId
  * @param {string} text
- * @returns {Promise<{ok: true} | {ok: false, code: "text_mismatch", reason: string}>}
+ * @param {"send_precheck"|"send_gate"} stage
+ * @returns {Promise<{ok: true} | {ok: false, code: "text_mismatch", reason: string, details: {stage: string, check: string|null}}>}
  */
-async function composerHolds(adapter, snapshot, composerBackendNodeId, text) {
+async function composerHolds(adapter, snapshot, composerBackendNodeId, text, stage) {
   const composer = snapshot.candidates.find((c) => c.backendNodeId === composerBackendNodeId);
-  if (!composer) return { ok: false, code: "text_mismatch", reason: "the composer is no longer observable" };
+  if (!composer) {
+    return { ok: false, code: "text_mismatch", reason: "the composer is no longer observable", details: { stage, check: "not_observable" } };
+  }
   const check = await adapter.editorHolds(composer.backendNodeId, composer.value, text);
   if (!check.ok) {
-    return { ok: false, code: "text_mismatch", reason: `the composer no longer holds the caller text: ${check.reason}` };
+    return {
+      ok: false,
+      code: "text_mismatch",
+      reason: `the composer no longer holds the caller text: ${check.reason}`,
+      details: { stage, check: check.check },
+    };
   }
   return { ok: true };
 }
@@ -466,8 +476,8 @@ export async function runWorkflow({
     const beforeSend = await adapter.observe();
     const stillThere = atDestination(beforeSend, destinationUrl);
     if (!stillThere.ok) throw new RefusalError(stillThere.code, stillThere.reason);
-    const holds = await composerHolds(adapter, beforeSend, composer.backendNodeId, text);
-    if (!holds.ok) throw new RefusalError(holds.code, holds.reason);
+    const holds = await composerHolds(adapter, beforeSend, composer.backendNodeId, text, "send_precheck");
+    if (!holds.ok) throw new RefusalError(holds.code, holds.reason, holds.details);
     const sends = beforeSend.candidates.filter((c) => c.kind === "send");
     const sendControl = await decideStep(
       "send",
@@ -481,7 +491,7 @@ export async function runWorkflow({
       require: async (fresh) => {
         const here = atDestination(fresh, destinationUrl);
         if (!here.ok) return here;
-        return composerHolds(adapter, fresh, composer.backendNodeId, text);
+        return composerHolds(adapter, fresh, composer.backendNodeId, text, "send_gate");
       },
     });
     report.steps.push({ step: "send", phase: "act", ...sent });

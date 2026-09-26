@@ -411,6 +411,10 @@ selected row can sit under a popover, where the hit test rightly refuses).
 | `destination_mismatch` | the page is not at the selected destination, or (with `exactDestination`) the chosen link does not name the requested destination exactly |
 | `duplicate_post` | (with `duplicateMarker`) the destination already shows content carrying any marker |
 
+A `text_mismatch` refusal's `refusal.details` also names where it happened
+(`stage`) and which composer check refused (`check`); the values are listed
+under `jev-cu-daily` Output.
+
 Exit codes: `0` for every workflow outcome including `refused` and
 `unverified`; `1` for runtime errors (`error.code` is `api`, `transport`, or
 `missing_key`); `2` for usage and validation errors.
@@ -707,10 +711,11 @@ most one report, and it adds exactly the three properties a single-shot
   is part of the rendered tree), so it is not proof that a send happened.
   The run then fails with no record and a human checks the channel.
 
-Unattended logs stay clean: the printed payload carries statuses and error
-codes only - never report numbers, the message text, the destination name,
-or any key - and the report's own stdout and stderr are captured and
-dropped. Debugging runs `jev-cu-report` directly, by a person.
+Unattended logs stay clean: the printed payload carries statuses, error
+codes, and closed-set diagnostic labels only - never report numbers, the
+message text, the destination name, or any key - and the report's own stdout
+and stderr are captured and dropped. Debugging runs `jev-cu-report` directly,
+by a person.
 
 ### Usage
 
@@ -736,12 +741,23 @@ stored.
 ### Output
 
 One JSON object on stdout: `tool` (`jev-cu-daily`), `version`, `status`,
-`mode` (`send` or `dry-run`), `targetDate`, `attempts` (per attempt: the
-report's `status`, `refusalCode`, `errorCode` - codes only), and `record`
+`mode` (`send` or `dry-run`), `targetDate`, `attempts` (per attempt: `attempt`,
+the report's `status`, `refusalCode`, `errorCode`, `completed`, `stage`, and
+`check` - codes and closed-set labels only), and `record`
 (`date`, `status: "posted"`, `postedAt`, `attempts`, `recordedAt`) when one
 was written or already existed. `status` is one of `posted`,
 `already-posted` (recorded date), `skipped-locked` (another run holds the
 lock), `dry-run`, or `failed`. A usage error adds `error.code: "usage"`.
+`completed` is the workflow's last completed stage (`navigate`, `draft`,
+`send`, or null). For a `text_mismatch` refusal, `stage` says where it
+happened (`draft_precheck`: the composer was not empty; `draft_readback`:
+the insertText read-back; `send_precheck`: the composer check before the send
+decision; `send_gate`: the same check inside the send click's gate) and
+`check` says which check refused (`not_empty`, `not_observable`,
+`not_describable`, `unresolved_inline`, `ax_value_differs`,
+`ax_dom_disagree`, or `inline_text_differs`, as in `EDITOR_CHECKS` in
+`src/cdp/adapter.mjs`). Absent labels are null; unrecognized labels become
+`other`, never page text.
 
 Exit codes: `0` for posted, already-posted, skipped-locked, and dry-run; `1`
 for failed (retries exhausted or a non-retryable failure); `2` for usage

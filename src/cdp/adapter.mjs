@@ -59,7 +59,7 @@ import { parseUrl } from "../profiles/profile.mjs";
  * destination, the composer still holds the text under the canonical
  * paragraph-aware comparison) are revalidated
  * immediately before dispatch. Returning a refusal aborts the action.
- * @typedef {{ok: true} | {ok: false, code: import("../errors.mjs").RefusalCode, reason: string}} Verdict
+ * @typedef {{ok: true} | {ok: false, code: import("../errors.mjs").RefusalCode, reason: string, details?: Record<string, unknown>}} Verdict
  * @typedef {(fresh: Snapshot) => Verdict | Promise<Verdict>} Precondition
  */
 
@@ -300,6 +300,24 @@ export function digestCandidates(candidates) {
 function normalizeUrl(url) {
   return url.replace(/\/+$/, "");
 }
+
+/**
+ * Why an editable does not hold the caller text, as a closed set that never
+ * carries page text: `not_empty` (the editable held text before inserting),
+ * `not_observable` (the editable left the page), `not_describable` (its DOM
+ * could not be read), `unresolved_inline` (an element the profile cannot
+ * prove), `ax_value_differs` (no proven element; the accessibility value
+ * differs), `ax_dom_disagree` (the accessibility value disagrees with the DOM
+ * text without the proven elements), `inline_text_differs` (the DOM text with
+ * the proven elements differs). A `text_mismatch` refusal carries one as
+ * `details.check`, beside `details.stage`, so an unattended run whose report
+ * output is dropped can still say which check refused where.
+ */
+export const EDITOR_CHECKS = Object.freeze(
+  new Set(["not_empty", "not_observable", "not_describable", "unresolved_inline", "ax_value_differs", "ax_dom_disagree", "inline_text_differs"]),
+);
+
+/** @typedef {"not_empty"|"not_observable"|"not_describable"|"unresolved_inline"|"ax_value_differs"|"ax_dom_disagree"|"inline_text_differs"} EditorCheck */
 
 /**
  * Composer/editor emptiness classification. A visually empty rich-text
@@ -619,7 +637,7 @@ export class CdpAdapter {
     }
     if (require !== null) {
       const verdict = await require(fresh);
-      if (!verdict.ok) throw new RefusalError(verdict.code, verdict.reason);
+      if (!verdict.ok) throw new RefusalError(verdict.code, verdict.reason, verdict.details);
     }
     return { fresh, candidate };
   }
@@ -774,29 +792,46 @@ export class CdpAdapter {
    * @param {number} backendNodeId
    * @param {string|null} value the editable's accessibility value
    * @param {string} text
-   * @returns {Promise<{ok: boolean, inlineReplacements: number, reason: string|null}>}
+   * @returns {Promise<{ok: boolean, inlineReplacements: number, reason: string|null, check: EditorCheck|null}>}
    */
   async editorHolds(backendNodeId, value, text) {
     const resolve = this.#profile.inlineText;
     if (resolve === undefined) {
       const ok = paragraphEqual(value, text);
-      return { ok, inlineReplacements: 0, reason: ok ? null : "the accessibility value differs from the text" };
+      return { ok, inlineReplacements: 0, reason: ok ? null : "the accessibility value differs from the text", check: ok ? null : "ax_value_differs" };
     }
     const described = await this.#describeTree(backendNodeId);
-    if (described === null) return { ok: false, inlineReplacements: 0, reason: "the editable's contents cannot be described" };
+    if (described === null) {
+      return { ok: false, inlineReplacements: 0, reason: "the editable's contents cannot be described", check: "not_describable" };
+    }
     const dom = domText(described, resolve);
     if (dom.unresolved > 0) {
-      return { ok: false, inlineReplacements: dom.replaced, reason: `${dom.unresolved} element(s) in the editable have no provable text` };
+      return {
+        ok: false,
+        inlineReplacements: dom.replaced,
+        reason: `${dom.unresolved} element(s) in the editable have no provable text`,
+        check: "unresolved_inline",
+      };
     }
     if (dom.replaced === 0) {
       const ok = paragraphEqual(value, text);
-      return { ok, inlineReplacements: 0, reason: ok ? null : "the accessibility value differs from the text" };
+      return { ok, inlineReplacements: 0, reason: ok ? null : "the accessibility value differs from the text", check: ok ? null : "ax_value_differs" };
     }
     if (!paragraphEqual(value, dom.plain)) {
-      return { ok: false, inlineReplacements: dom.replaced, reason: "the accessibility value disagrees with the editable's DOM text" };
+      return {
+        ok: false,
+        inlineReplacements: dom.replaced,
+        reason: "the accessibility value disagrees with the editable's DOM text",
+        check: "ax_dom_disagree",
+      };
     }
     const ok = paragraphEqual(dom.text, text);
-    return { ok, inlineReplacements: dom.replaced, reason: ok ? null : "the editable's text with proven inline elements differs from the text" };
+    return {
+      ok,
+      inlineReplacements: dom.replaced,
+      reason: ok ? null : "the editable's text with proven inline elements differs from the text",
+      check: ok ? null : "inline_text_differs",
+    };
   }
 
   /**
@@ -825,6 +860,8 @@ export class CdpAdapter {
     if (!editorValueIsEmpty(candidate.value)) {
       throw new RefusalError("text_mismatch", `${candidate.label} already contains text; refusing to append`, {
         readBack: candidate.value,
+        stage: "draft_precheck",
+        check: "not_empty",
       });
     }
     const point = await this.#locate(candidate);
@@ -841,7 +878,7 @@ export class CdpAdapter {
       readBack = current ? current.value : null;
       const check = current
         ? await this.editorHolds(current.backendNodeId, readBack, text)
-        : { ok: false, inlineReplacements: 0, reason: "the editable is no longer observable" };
+        : { ok: false, inlineReplacements: 0, reason: "the editable is no longer observable", check: "not_observable" };
       inlineReplacements = check.inlineReplacements;
       if (check.ok) break;
       if (this.#now() - started >= this.#settleMs) {
@@ -849,6 +886,8 @@ export class CdpAdapter {
           readBack,
           expectedLength: text.length,
           reason: check.reason,
+          stage: "draft_readback",
+          check: check.check,
         });
       }
       await this.#sleep(this.#settlePollMs);

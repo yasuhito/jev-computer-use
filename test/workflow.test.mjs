@@ -597,6 +597,8 @@ test("the emoji report refuses before send when accessibility text alone is comp
   const report = await sendEmojiToSelfDm(env);
   assert.equal(report.status, "refused");
   assert.equal(report.refusal?.code, "text_mismatch");
+  assert.equal(report.refusal?.details.stage, "draft_readback");
+  assert.equal(report.refusal?.details.check, "ax_value_differs");
   assert.equal(report.completed, "navigate");
   assert.equal(env.fake.clicks().length, 2, "destination and composer focus only; no send click");
   assert.deepEqual(env.fake.currentMessages(), []);
@@ -613,9 +615,41 @@ test("an emoji changed in the draft between typing and sending refuses before th
   const report = await sendEmojiToSelfDm(env, { decide });
   assert.equal(report.status, "refused");
   assert.equal(report.refusal?.code, "text_mismatch");
+  // The draft changed during the send decision, so the send click's own gate refuses.
+  assert.equal(report.refusal?.details.stage, "send_gate");
+  assert.equal(report.refusal?.details.check, "inline_text_differs");
   assert.equal(report.completed, "draft");
   assert.equal(env.fake.clicks().length, 2);
   assert.deepEqual(env.fake.currentMessages(), []);
+});
+
+test("an emoji image that turns unprovable after a passing read-back refuses at the send precheck and names the check", async () => {
+  // The 2026-09-26 shape: the draft read back, then the composer no longer
+  // held the text when checked before the send decision. The refusal must
+  // say where and which check refused, and nothing is sent.
+  const env = setup({ page: selfDmPage(), splitMessages: true });
+  const send = env.fake.session.send.bind(env.fake.session);
+  let inserted = false;
+  let treeReads = 0;
+  env.fake.session.send = async (method, params = {}) => {
+    const result = await send(method, params);
+    if (method === "Input.insertText") inserted = true;
+    if (inserted && method === "DOM.describeNode" && params.depth === -1 && ++treeReads === 1) {
+      env.fake.state.emojiAttributes = (emoji, where) => (where === "composer" ? { class: "emoji", alt: "", src: "/static/blank.png" } : emojiImageAttributes(emoji, where));
+    }
+    return result;
+  };
+  const report = await sendEmojiToSelfDm(env);
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "text_mismatch");
+  assert.equal(report.refusal?.details.stage, "send_precheck");
+  assert.equal(report.refusal?.details.check, "unresolved_inline");
+  assert.equal(report.completed, "draft");
+  const composerStep = /** @type {{verified?: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
+  assert.equal(composerStep?.verified, true, "the read-back itself passed");
+  assert.equal(env.fake.clicks().length, 2, "destination and composer focus only; no send click");
+  assert.deepEqual(env.fake.currentMessages(), []);
+  assert.equal(env.fake.currentDraft(), EMOJI_REPORT, "the unsent draft stays in the composer");
 });
 
 test("a posted emoji message rendered differently or unprovably stays unverified", async () => {

@@ -29,14 +29,13 @@
  *   earlier attempt did post, the next attempt refuses instead of posting
  *   twice.
  *
- * Output scrubbing: the printed payload carries statuses and error codes
- * only - never report numbers, message text, the destination name, or any
- * key - so unattended logs stay free of report data and
- * deployment-specific values. The report's own stderr is captured and
- * dropped for the same reason. Debugging happens by running
- * `jev-cu-report` directly, by a person.
+ * Output scrubbing: attempt notes retain statuses, codes, and closed-set
+ * diagnostic labels, as documented in README "jev-cu-daily: Output". The
+ * report's own stdout and stderr are captured and dropped so unattended logs
+ * stay free of report data and deployment-specific values.
  */
 import { addDays, utcDateOf } from "../report/dates.mjs";
+import { EDITOR_CHECKS } from "../cdp/adapter.mjs";
 import { DEFAULT_CDP_ENDPOINT } from "../cdp/transport.mjs";
 import { DEFAULT_PROFILE_NAME } from "../profiles/index.mjs";
 import { DEFAULT_MAX_CANDIDATES, HARD_MAX_CANDIDATES } from "../validate.mjs";
@@ -217,14 +216,30 @@ export function parseDailyArgs(argv, _context = {}) {
  * @property {string} status the report payload's status, or "error"
  * @property {string|null} refusalCode from the workflow's or the payload's refusal
  * @property {string|null} errorCode
+ * @property {"navigate"|"draft"|"send"|null} completed the workflow's last completed stage
+ * @property {string|null} stage where a text_mismatch refusal happened (TEXT_CHECK_STAGES), "other", or null
+ * @property {string|null} check which composer check refused (EDITOR_CHECKS), "other", or null
  */
+
+/** The workflow stages a note may name; anything else is null. */
+const COMPLETED_STAGES = Object.freeze(new Set(["navigate", "draft", "send"]));
+
+/**
+ * Where a text_mismatch refusal can happen: the emptiness check before
+ * inserting, the insertText read-back, the composer check before the send
+ * decision, and the same check inside the send click's gate.
+ */
+export const TEXT_CHECK_STAGES = Object.freeze(new Set(["draft_precheck", "draft_readback", "send_precheck", "send_gate"]));
 
 /** @typedef {{code: number, payload: Record<string, unknown>|null}} ReportResult */
 /** @typedef {(input: {endpoint: string, targetId: string|null, profile: import("../profiles/profile.mjs").Profile}) => Promise<import("../cdp/adapter.mjs").CdpSession>} ConnectFn */
 
 /**
  * Scrub one report result down to statuses and codes. No message, no
- * numbers, no destination, no key.
+ * numbers, no destination, no key. Besides the status and codes, the note
+ * keeps only closed-set labels: the workflow's last completed stage and, for
+ * a composer text refusal, where it happened and which check refused, so a
+ * refused run says why without its dropped report output.
  *
  * @param {number} attempt
  * @param {ReportResult} result
@@ -242,11 +257,31 @@ function noteOf(attempt, result) {
   const error = p !== null && typeof p.error === "object" && p.error !== null ? /** @type {Record<string, unknown>} */ (p.error) : null;
   /** @param {Record<string, unknown>|null} v */
   const code = (v) => (v !== null && typeof v.code === "string" ? v.code : null);
+  const details =
+    refusal !== null && typeof refusal.details === "object" && refusal.details !== null
+      ? /** @type {Record<string, unknown>} */ (refusal.details)
+      : null;
+  /**
+   * A closed-set label from the refusal details: a known value passes, any
+   * other present value becomes "other", so no page text can reach the note.
+   *
+   * @param {string} key
+   * @param {ReadonlySet<string>} known
+   */
+  const label = (key, known) => {
+    const value = details?.[key];
+    if (value === undefined || value === null) return null;
+    return typeof value === "string" && known.has(value) ? value : "other";
+  };
+  const completed = send !== null && typeof send.completed === "string" && COMPLETED_STAGES.has(send.completed) ? send.completed : null;
   return {
     attempt,
     status: p !== null && typeof p.status === "string" ? p.status : "error",
     refusalCode: code(refusal),
     errorCode: code(error),
+    completed: /** @type {AttemptNote["completed"]} */ (completed),
+    stage: label("stage", TEXT_CHECK_STAGES),
+    check: label("check", EDITOR_CHECKS),
   };
 }
 
