@@ -53,6 +53,31 @@ function page() {
   return synthetic;
 }
 
+/** @param {number} group */
+function killGroup(group) {
+  try {
+    process.kill(-group, "SIGTERM");
+  } catch (err) {
+    if (/** @type {NodeJS.ErrnoException} */ (err).code !== "ESRCH") throw err;
+  }
+}
+
+/**
+ * Whether any process of the group is still alive (a removed profile
+ * directory is otherwise refilled by a helper process: ENOTEMPTY).
+ *
+ * @param {number} group
+ */
+function groupAlive(group) {
+  try {
+    process.kill(-group, 0);
+    return true;
+  } catch (err) {
+    if (/** @type {NodeJS.ErrnoException} */ (err).code === "ESRCH") return false;
+    throw err;
+  }
+}
+
 /**
  * Serve the page and start a headless Chromium on it; returns a connected
  * page session plus a cleanup.
@@ -76,7 +101,10 @@ async function launch() {
   const chrome = spawn(
     /** @type {string} */ (CHROME),
     ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profileDir}`, "--no-first-run", "--window-size=1280,2000", `http://127.0.0.1:${port}/client/T0SYNTH/C0GENERAL`],
-    { stdio: ["ignore", "ignore", "pipe"] },
+    // Its own process group, so cleanup can wait for every Chromium process:
+    // helper processes outlive the browser process briefly and may still
+    // write into the profile directory.
+    { stdio: ["ignore", "ignore", "pipe"], detached: true },
   );
   const devtools = await new Promise((resolve, reject) => {
     let buffered = "";
@@ -107,9 +135,12 @@ async function launch() {
   }
   const cleanup = async () => {
     session.close();
-    const exited = new Promise((resolve) => chrome.once("exit", resolve));
-    chrome.kill();
-    await exited;
+    const group = /** @type {number} */ (chrome.pid);
+    killGroup(group);
+    for (let waited = 0; groupAlive(group); waited += 20) {
+      if (waited >= 10_000) throw new Error("Chromium processes outlived cleanup by 10 s");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     server.close();
     await rm(profileDir, { recursive: true, force: true });
   };
