@@ -738,11 +738,16 @@ test("editorHolds refuses when the accessibility value disagrees with the editab
   fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", "👤 1,234人");
   const snapshot = await adapter.observe();
   const composer = find(snapshot, /Message #general/);
-  assert.deepEqual(await adapter.editorHolds(composer.backendNodeId, " 1,234人", "👤 1,234人"), { ok: true, inlineReplacements: 1, reason: null });
+  assert.deepEqual(await adapter.editorHolds(composer.backendNodeId, " 1,234人", "👤 1,234人"), { ok: true, inlineReplacements: 1, reason: null, check: null });
   const hidden = await adapter.editorHolds(composer.backendNodeId, " 1,234人 extra", "👤 1,234人");
   assert.equal(hidden.ok, false);
   assert.match(String(hidden.reason), /disagrees/);
-  assert.equal((await adapter.editorHolds(987654, " 1,234人", "👤 1,234人")).ok, false);
+  assert.equal(hidden.check, "ax_dom_disagree");
+  const changed = await adapter.editorHolds(composer.backendNodeId, " 1,234人", "📅 1,234人");
+  assert.equal(changed.check, "inline_text_differs");
+  const gone = await adapter.editorHolds(987654, " 1,234人", "👤 1,234人");
+  assert.equal(gone.ok, false);
+  assert.equal(gone.check, "not_describable");
 });
 
 test("domText reads text, line breaks, blocks, proven elements, and unresolved opaque elements", () => {

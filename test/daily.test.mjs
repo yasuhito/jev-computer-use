@@ -350,6 +350,41 @@ test("the printed payload carries no report data, destination, message, or key",
   assert.ok(payload?.record);
 });
 
+test("a refused attempt keeps only closed-set stage and check labels, never refusal text", async () => {
+  const refused = (/** @type {Record<string, unknown>} */ details, /** @type {unknown} */ completed = "draft") => ({
+    code: 0,
+    payload: {
+      status: "refused",
+      message: "QA² 新規ユーザー｜9/20（UTC）\n👤 1,234人",
+      send: {
+        status: "refused",
+        completed,
+        refusal: { code: "text_mismatch", message: "qa2 へのメッセージ reads back differently", details },
+      },
+    },
+  });
+  const { io } = baseIo({
+    argv: ["--state-dir", "/state", "--max-attempts", "3"],
+    results: [
+      refused({ stage: "send_precheck", check: "ax_dom_disagree", readBack: "QA² 新規ユーザー｜9/20（UTC）\n\n 1,234人", reason: "the composer no longer holds the caller text" }),
+      refused({ stage: "QA² 1,234人", check: "1,234人 qa2" }, "somewhere"),
+      refused({ readBack: "1,234人" }, "navigate"),
+    ],
+  });
+  const { code, payload } = await runDailyJob(io);
+  assert.equal(code, 1);
+  assert.deepEqual(
+    payload?.attempts.map((a) => [a.completed, a.stage, a.check]),
+    [
+      ["draft", "send_precheck", "ax_dom_disagree"],
+      [null, "other", "other"],
+      ["navigate", null, null],
+    ],
+  );
+  const text = JSON.stringify(payload);
+  assert.doesNotMatch(text, /1,234|新規ユーザー|qa2|reads back|holds/);
+});
+
 test("usage errors exit 2 with a JSON error payload", async () => {
   /** @type {string[]} */
   const err = [];

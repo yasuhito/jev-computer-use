@@ -298,10 +298,69 @@ test("a composer left holding an unposted draft is refused, never appended to", 
     assert.equal(payload?.status, "failed");
     assert.equal(payload?.attempts.length, 2);
     assert.equal(payload?.attempts[1]?.refusalCode, "text_mismatch");
+    assert.equal(payload?.attempts[1]?.completed, "navigate");
+    assert.equal(payload?.attempts[1]?.stage, "draft_precheck");
+    assert.equal(payload?.attempts[1]?.check, "not_empty");
     const fake = c.sessions[1];
     assert.ok(fake);
     assert.equal(fake.currentDraft(), staleDraft);
     assert.equal(fake.currentMessages().length, 0);
+  } finally {
+    await c.cleanup();
+  }
+});
+
+test("a composer text refusal before the send click says where and which check refused, then the leftover draft ends the run (2026-09-26)", async () => {
+  // The 2026-09-26 run: attempt 1 drafted, then refused text_mismatch before
+  // the send click; attempt 2 found the marker in its own leftover draft and
+  // refused duplicate_post. Its notes kept only the codes, so which check
+  // refused was lost with the dropped report output. Here the composer's
+  // emoji images turn unprovable after a passing read-back.
+  const c = await captureIo({
+    extraArgv: ["--retry-base-sec", "1"],
+    // Attempt 1 decides the destination and the composer; attempt 2 only the destination.
+    decide: decideByLabel([SEND_FLOW[0], SEND_FLOW[1], SEND_FLOW[0]].map((p) => /** @type {RegExp} */ (p))),
+    connect: async () => {
+      const fake = createDailyFakeCdp();
+      const first = c.sessions[0];
+      if (first !== undefined) {
+        // The retry reconnects to the same channel, whose composer still
+        // holds the unsent draft from the first attempt.
+        fake.state.drafts.set("/client/T0SYNTH/C0QA2", first.currentDraft());
+      } else {
+        const send = fake.session.send.bind(fake.session);
+        let inserted = false;
+        let treeReads = 0;
+        fake.session.send = async (method, params = {}) => {
+          const result = await send(method, params);
+          if (method === "Input.insertText") inserted = true;
+          if (inserted && method === "DOM.describeNode" && params.depth === -1 && ++treeReads === 1) {
+            fake.state.emojiAttributes = () => ({ class: "emoji", alt: "", src: "/static/blank.png" });
+          }
+          return result;
+        };
+      }
+      c.sessions.push(fake);
+      return fake.session;
+    },
+  });
+  try {
+    const { code, payload } = await runDailyJob(c.io);
+    assert.equal(code, 1);
+    assert.equal(payload?.status, "failed");
+    assert.equal(payload?.record, null);
+    assert.deepEqual(payload?.attempts, [
+      { attempt: 1, status: "refused", refusalCode: "text_mismatch", errorCode: null, completed: "draft", stage: "send_precheck", check: "unresolved_inline" },
+      { attempt: 2, status: "refused", refusalCode: "duplicate_post", errorCode: null, completed: "navigate", stage: null, check: null },
+    ]);
+    const first = c.sessions[0];
+    assert.ok(first);
+    assert.equal(first.clicks().length, 2, "destination and composer focus only; no send click");
+    assert.equal(first.currentMessages().length, 0);
+    assert.match(first.currentDraft(), /^QA² 新規ユーザー｜9\/20（UTC）\n👤 /);
+    await assert.rejects(readFile(c.recordPath), { code: "ENOENT" });
+    const text = JSON.stringify(payload);
+    assert.doesNotMatch(text, /新規ユーザー|👤|人|#qa2|qa2|idempotency/);
   } finally {
     await c.cleanup();
   }
