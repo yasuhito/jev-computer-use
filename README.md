@@ -712,9 +712,10 @@ most one report, and it adds exactly the three properties a single-shot
   The run then fails with no record and a human checks the channel.
 
 Unattended logs stay clean: the printed payload carries statuses, error
-codes, and closed-set stage labels only - never report numbers, the message text, the destination name,
-or any key - and the report's own stdout and stderr are captured and
-dropped. Debugging runs `jev-cu-report` directly, by a person.
+codes, and closed-set diagnostic labels only - never report numbers, the
+message text, the destination name, or any key - and the report's own stdout
+and stderr are captured and dropped. Debugging runs `jev-cu-report` directly,
+by a person.
 
 ### Usage
 
@@ -740,8 +741,8 @@ stored.
 ### Output
 
 One JSON object on stdout: `tool` (`jev-cu-daily`), `version`, `status`,
-`mode` (`send` or `dry-run`), `targetDate`, `attempts` (per attempt: the
-report's `status`, `refusalCode`, `errorCode`, `completed`, `stage`, and
+`mode` (`send` or `dry-run`), `targetDate`, `attempts` (per attempt: `attempt`,
+the report's `status`, `refusalCode`, `errorCode`, `completed`, `stage`, and
 `check` - codes and closed-set labels only), and `record`
 (`date`, `status: "posted"`, `postedAt`, `attempts`, `recordedAt`) when one
 was written or already existed. `status` is one of `posted`,
@@ -755,10 +756,8 @@ decision; `send_gate`: the same check inside the send click's gate) and
 `check` says which check refused (`not_empty`, `not_observable`,
 `not_describable`, `unresolved_inline`, `ax_value_differs`,
 `ax_dom_disagree`, or `inline_text_differs`, as in `EDITOR_CHECKS` in
-`src/cdp/adapter.mjs`); both are null otherwise, and a value outside those
-sets is printed as `other`, never as page text. They are there because the
-2026-09-26 run refused `text_mismatch` before the send click and the dropped
-report output left no way to tell which check refused.
+`src/cdp/adapter.mjs`). Absent labels are null; unrecognized labels become
+`other`, never page text.
 
 Exit codes: `0` for posted, already-posted, skipped-locked, and dry-run; `1`
 for failed (retries exhausted or a non-retryable failure); `2` for usage

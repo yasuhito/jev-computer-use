@@ -29,12 +29,10 @@
  *   earlier attempt did post, the next attempt refuses instead of posting
  *   twice.
  *
- * Output scrubbing: the printed payload carries statuses and error codes
- * only - never report numbers, message text, the destination name, or any
- * key - so unattended logs stay free of report data and
- * deployment-specific values. The report's own stderr is captured and
- * dropped for the same reason. Debugging happens by running
- * `jev-cu-report` directly, by a person.
+ * Output scrubbing: attempt notes retain statuses, codes, and closed-set
+ * diagnostic labels, as documented in README "jev-cu-daily: Output". The
+ * report's own stdout and stderr are captured and dropped so unattended logs
+ * stay free of report data and deployment-specific values.
  */
 import { addDays, utcDateOf } from "../report/dates.mjs";
 import { EDITOR_CHECKS } from "../cdp/adapter.mjs";
