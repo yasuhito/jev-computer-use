@@ -98,6 +98,7 @@ test("dry-run against the fixture prints the typed report and the exact message,
   assert.equal(payload.report.kind, "unity-analytics-new-users-daily");
   assert.equal(payload.report.reportDate, "2026-09-20");
   assert.equal(payload.report.previousDay.newUsers, 1234);
+  assert.deepEqual(payload.report.cumulativeUsers, { asOf: "2026-09-20", count: 9876 });
   assert.equal(payload.report.game.gameId, 24601);
   assert.equal(payload.report.idempotencyKey, KEY);
   assert.deepEqual(payload.delivery.duplicateMarker, [TITLE_MARKER, KEY]);
@@ -108,6 +109,7 @@ test("dry-run against the fixture prints the typed report and the exact message,
       "👤 1,234人（前日より +56人）",
       "⚖️ 直近7日平均 1,035.4人 より 198.6人多め（+19.2%）",
       "📅 直近7日（9/14→9/20）：1,300 → 1,220 → 1,185 → 1,160 → 1,205 → 1,178 → 1,234人",
+      "📈 累計 9,876人（9/20 時点）",
     ].join("\n"),
   );
   assert.doesNotMatch(payload.message, new RegExp(KEY));
@@ -176,7 +178,7 @@ test("send mode posts the exact rendered message through the bounded workflow an
     [[TITLE_MARKER, 0], [KEY, 0]],
   );
   assert.equal(c.fake.state.disconnected, true);
-  assert.deepEqual(executor.calls.map((s) => s.name), ["account_games", "new_users_by_start_date"]);
+  assert.deepEqual(executor.calls.map((s) => s.name), ["account_games", "new_users_by_start_date", "cumulative_users"]);
 });
 
 test("send mode refuses a historical key-bearing post without touching the composer", async () => {
@@ -196,21 +198,21 @@ test("send mode refuses a historical key-bearing post without touching the compo
   assert.equal(c.fake.currentMessages().length, 1);
 });
 
-test("a second report send detects the new four-line title and does not post again", async () => {
+test("a second report send detects the new five-line title and does not post again", async () => {
   const argv = ["--mode", "send", "--destination", "qa2-metrics", "--allow-destination", "qa2-metrics"];
   const first = await captureFixtureIo(argv, { decide: decideByLabel(SEND_FLOW) });
   assert.equal(await runCli(first.io), 0);
   const posted = first.fake.currentMessages()[0];
   assert.ok(posted);
-  assert.equal(posted.split("\n").length, 4);
-  const retry = await captureFixtureIo(argv, { decide: decideByLabel(SEND_FLOW) });
-  retry.fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", [posted]);
-  assert.equal(await runCli(retry.io), 0);
-  assert.equal(retry.json().status, "refused");
-  assert.equal(retry.json().send.refusal.code, "duplicate_post");
-  assert.equal(retry.json().send.refusal.details.marker, TITLE_MARKER);
-  assert.equal(retry.fake.methodCalls("Input.insertText").length, 0);
-  assert.deepEqual(retry.fake.currentMessages(), [posted]);
+  assert.equal(posted.split("\n").length, 5);
+  const rerun = await captureFixtureIo(argv, { decide: decideByLabel(SEND_FLOW) });
+  rerun.fake.state.messages.set("/client/T0SYNTH/C0QA2METRICS", [posted]);
+  assert.equal(await runCli(rerun.io), 0);
+  assert.equal(rerun.json().status, "refused");
+  assert.equal(rerun.json().send.refusal.code, "duplicate_post");
+  assert.equal(rerun.json().send.refusal.details.marker, TITLE_MARKER);
+  assert.equal(rerun.fake.methodCalls("Input.insertText").length, 0);
+  assert.deepEqual(rerun.fake.currentMessages(), [posted]);
 });
 
 test("send mode refuses when the chosen destination is not named exactly as requested", async () => {

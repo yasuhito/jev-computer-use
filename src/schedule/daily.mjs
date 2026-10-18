@@ -4,30 +4,15 @@
  * three things unattended execution needs and the single-shot CLI cannot
  * provide:
  *
- * - Durable per-date idempotency: the target date is the report's own date
- *   rule (the last complete UTC day) computed from the same clock. A run
- *   posts, records, and only then reports success; a later run for a
- *   recorded date does nothing. A record is written only after the workflow
- *   verified the send - the one proof that Slack accepted this date's post.
- *   Every other outcome (runtime error, refusal, unverified, no_match,
- *   escalate) leaves no record, so a human or a later run can resume; the
- *   workflow's duplicate-marker guard keeps any such resume from posting
- *   twice for a date whose send did land but could not be verified.
+ * - Single-attempt idempotency: immediately before the send click, write a
+ *   durable per-date `attempted` record. After that point, never retry this
+ *   date automatically, including after an uncertain transport or
+ *   verification result. Replace the marker with `posted` only when the
+ *   workflow verifies the exact post. Duplicate detection checks posted
+ *   message containers, not a possibly unposted draft.
  * - Single-run exclusion: an exclusive lock file in the state directory, so
  *   a timer catch-up and a manual run cannot race. Locks left by a previous
  *   boot or a dead process are broken; a live run is not.
- * - Bounded retry: a failed attempt (runtime error, refused, unverified,
- *   no_match, escalate) is retried at most `--max-attempts` times with
- *   exponential backoff. Two classes fail immediately because no backoff
- *   can fix them: configuration errors (missing credentials, usage, a
- *   destination outside the allowlist) and the `duplicate_post` refusal,
- *   where the destination already renders this date's idempotency key. The
- *   marker can sit in an unposted draft as well as in a real post, so a
- *   duplicate refusal is never recorded as success; it ends the run with no
- *   record and lets a human check the channel. Retries are safe because
- *   every attempt runs with the report's duplicate-marker guard: if an
- *   earlier attempt did post, the next attempt refuses instead of posting
- *   twice.
  *
  * Output scrubbing: attempt notes retain statuses, codes, and closed-set
  * diagnostic labels, as documented in README "jev-cu-daily: Output". The
@@ -44,25 +29,14 @@ import { FileRecordStore, acquireRunLock } from "./state.mjs";
 import { runReportJob } from "../../bin/jev-cu-report.mjs";
 
 export const DAILY_TOOL = "jev-cu-daily";
-export const DAILY_VERSION = "0.1.0";
+export const DAILY_VERSION = "0.2.0";
 
-/** @typedef {"posted"|"already-posted"|"skipped-locked"|"dry-run"|"failed"} DailyStatus */
+/** @typedef {"posted"|"already-posted"|"already-attempted"|"skipped-locked"|"dry-run"|"uncertain"|"failed"} DailyStatus */
 /** @typedef {"send"|"dry-run"} DailyMode */
 
-export const DEFAULT_MAX_ATTEMPTS = 3;
-export const MAX_ATTEMPTS_BOUND = 10;
-export const DEFAULT_RETRY_BASE_SEC = 60;
-export const MAX_RETRY_BASE_SEC = 3600;
 export const DAILY_DESTINATION = "qa2";
-/** Error codes no amount of retrying can fix; the run fails on the first one. */
-export const NON_RETRYABLE_CODES = Object.freeze(
-  new Set(["usage", "missing_key", "missing_snowflake_config", "destination_not_allowed", "invalid_text", "invalid_destination"]),
-);
-
 const VALUE_FLAGS = new Set([
   "--state-dir",
-  "--max-attempts",
-  "--retry-base-sec",
   "--profile",
   "--cdp",
   "--target",
@@ -74,16 +48,14 @@ const VALUE_FLAGS = new Set([
 const USAGE = `Usage: jev-cu-daily [options]
 
 Run the daily New Users report once for its target date (the last complete
-UTC day): skip when that date is already recorded as posted, otherwise run
-jev-cu-report --mode send with bounded retries and record success only after
-the send was verified. Designed for a daily systemd timer; credentials and
-the browser session come from the operator's environment.
+UTC day): skip when that date is already recorded as posted or attempted,
+otherwise run jev-cu-report --mode send once. The attempted record is written
+immediately before the send click. An uncertain result is never retried
+automatically. Designed for a daily systemd timer; credentials and the
+browser session come from the operator's environment.
 
 Options:
   --state-dir DIR        durable state directory (records + run lock); required
-  --max-attempts N       send attempts per run, 1..${MAX_ATTEMPTS_BOUND} (default ${DEFAULT_MAX_ATTEMPTS})
-  --retry-base-sec N     backoff base seconds, 0..${MAX_RETRY_BASE_SEC}; attempt n waits base*2^(n-1)
-                         (default ${DEFAULT_RETRY_BASE_SEC})
   --dry-run              run the report in dry-run mode and write no record
   --profile NAME         as in jev-cu-report (default ${DEFAULT_PROFILE_NAME})
   --cdp URL              DevTools HTTP endpoint (default ${DEFAULT_CDP_ENDPOINT})
@@ -95,7 +67,8 @@ Options:
 
 Destination: the exact Slack channel qa2. Environment: SNOWFLAKE_* and
 TYPESAFE_API_KEY as in jev-cu-report. Exit codes: 0 posted, already-posted,
-skipped-locked, or dry-run; 1 failed; 2 usage error.`;
+skipped-locked, or dry-run; 1 already-attempted, uncertain, or failed;
+2 usage error.`;
 
 /**
  * @typedef {object} DailyOptions
@@ -103,8 +76,6 @@ skipped-locked, or dry-run; 1 failed; 2 usage error.`;
  * @property {string|null} destination
  * @property {string[]} allowDestinations
  * @property {DailyMode} mode
- * @property {number} maxAttempts
- * @property {number} retryBaseSec
  * @property {string|null} profile
  * @property {string|null} cdp
  * @property {string|null} target
@@ -127,8 +98,6 @@ export function parseDailyArgs(argv, _context = {}) {
     destination: DAILY_DESTINATION,
     allowDestinations: [DAILY_DESTINATION],
     mode: "send",
-    maxAttempts: DEFAULT_MAX_ATTEMPTS,
-    retryBaseSec: DEFAULT_RETRY_BASE_SEC,
     profile: null,
     cdp: null,
     target: null,
@@ -174,12 +143,6 @@ export function parseDailyArgs(argv, _context = {}) {
         if (inline.length === 0) throw new Error("--state-dir must be a non-empty path");
         options.stateDir = inline;
         break;
-      case "--max-attempts":
-        options.maxAttempts = integer(flag, inline, 1, MAX_ATTEMPTS_BOUND);
-        break;
-      case "--retry-base-sec":
-        options.retryBaseSec = integer(flag, inline, 0, MAX_RETRY_BASE_SEC);
-        break;
       case "--profile":
         options.profile = inline;
         break;
@@ -219,6 +182,8 @@ export function parseDailyArgs(argv, _context = {}) {
  * @property {"navigate"|"draft"|"send"|null} completed the workflow's last completed stage
  * @property {string|null} stage where a text_mismatch refusal happened (TEXT_CHECK_STAGES), "other", or null
  * @property {string|null} check which composer check refused (EDITOR_CHECKS), "other", or null
+ * @property {string|null} emojiIdentity the verified identity summary, if present
+ * @property {string|null} verification the closed-set post-verification outcome
  */
 
 /** The workflow stages a note may name; anything else is null. */
@@ -230,6 +195,8 @@ const COMPLETED_STAGES = Object.freeze(new Set(["navigate", "draft", "send"]));
  * decision, and the same check inside the send click's gate.
  */
 export const TEXT_CHECK_STAGES = Object.freeze(new Set(["draft_precheck", "draft_readback", "send_precheck", "send_gate"]));
+const EMOJI_IDENTITIES = Object.freeze(new Set(["proven", "unproven", "contradicted", "not_applicable", "not_verified"]));
+const POST_VERIFICATIONS = Object.freeze(new Set(["verified", "emoji_identity_unproven", "emoji_identity_contradicted", "text_mismatch", "text_not_exposed", "not_found"]));
 
 /** @typedef {{code: number, payload: Record<string, unknown>|null}} ReportResult */
 /** @typedef {(input: {endpoint: string, targetId: string|null, profile: import("../profiles/profile.mjs").Profile}) => Promise<import("../cdp/adapter.mjs").CdpSession>} ConnectFn */
@@ -274,6 +241,13 @@ function noteOf(attempt, result) {
     return typeof value === "string" && known.has(value) ? value : "other";
   };
   const completed = send !== null && typeof send.completed === "string" && COMPLETED_STAGES.has(send.completed) ? send.completed : null;
+  const steps = send !== null && Array.isArray(send.steps) ? send.steps : [];
+  const posted = steps.find((step) => typeof step === "object" && step !== null && step.step === "posted");
+  /** @param {string} key @param {ReadonlySet<string>} allowed */
+  const safeStepValue = (key, allowed) => {
+    const value = typeof posted === "object" && posted !== null ? posted[key] : null;
+    return value === null || value === undefined ? null : typeof value === "string" && allowed.has(value) ? value : "other";
+  };
   return {
     attempt,
     status: p !== null && typeof p.status === "string" ? p.status : "error",
@@ -282,7 +256,23 @@ function noteOf(attempt, result) {
     completed: /** @type {AttemptNote["completed"]} */ (completed),
     stage: label("stage", TEXT_CHECK_STAGES),
     check: label("check", EDITOR_CHECKS),
+    emojiIdentity: safeStepValue("emojiIdentity", EMOJI_IDENTITIES),
+    verification: safeStepValue("verification", POST_VERIFICATIONS),
   };
+}
+
+/**
+ * A daily success needs a pre-click marker and the workflow's explicit
+ * workflow-verified post result, including the report's emoji identity.
+ * @param {ReportResult} result
+ */
+function isVerifiedSend(result) {
+  const payload = result.payload;
+  if (payload === null || payload.status !== "executed") return false;
+  const send = typeof payload.send === "object" && payload.send !== null ? /** @type {Record<string, any>} */ (payload.send) : null;
+  if (send === null || send.status !== "executed" || !Array.isArray(send.steps)) return false;
+  const posted = send.steps.find((step) => typeof step === "object" && step !== null && step.step === "posted");
+  return posted?.verified === true && posted?.verification === "verified" && posted?.emojiIdentity === "proven";
 }
 
 /**
@@ -293,7 +283,7 @@ function noteOf(attempt, result) {
  * @property {DailyMode} mode
  * @property {string} targetDate
  * @property {AttemptNote[]} attempts
- * @property {import("./state.mjs").PostedRecord|null} record
+ * @property {import("./state.mjs").DailyRecord|null} record
  * @property {{code: string, message: string}|null} [error] usage errors only
  */
 
@@ -303,7 +293,7 @@ function noteOf(attempt, result) {
  * @param {DailyMode} parts.mode
  * @param {string} parts.targetDate
  * @param {AttemptNote[]} parts.attempts
- * @param {import("./state.mjs").PostedRecord|null} parts.record
+ * @param {import("./state.mjs").DailyRecord|null} parts.record
  * @returns {DailyPayload}
  */
 function dailyPayload({ status, mode, targetDate, attempts, record }) {
@@ -374,39 +364,43 @@ export async function runDailyJob({
       const attempts = [];
       const existing = await state.read(targetDate);
       if (existing) {
-        return { code: 0, payload: dailyPayload({ status: "already-posted", mode: options.mode, targetDate, attempts, record: existing }) };
+        const status = existing.status === "posted" ? "already-posted" : "already-attempted";
+        return { code: existing.status === "posted" ? 0 : 1, payload: dailyPayload({ status, mode: options.mode, targetDate, attempts, record: existing }) };
       }
 
-      for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
-        const result = await attemptOnce(options, runStartedAt);
-        const note = noteOf(attempt, result);
-        attempts.push(note);
-        const p = result.payload;
-        if (options.mode === "dry-run" && p !== null && p.status === "dry-run") {
-          return { code: 0, payload: dailyPayload({ status: "dry-run", mode: options.mode, targetDate, attempts, record: null }) };
-        }
-        if (result.code === 0 && p !== null && p.status === "executed") {
-          const record = /** @type {import("./state.mjs").PostedRecord} */ ({
-            date: targetDate,
-            status: "posted",
-            postedAt: new Date(runStartedAt).toISOString(),
-            attempts: attempt,
-            recordedAt: new Date(runStartedAt).toISOString(),
-          });
-          await state.write(record);
-          return { code: 0, payload: dailyPayload({ status: "posted", mode: options.mode, targetDate, attempts, record }) };
-        }
-        // A duplicate_post refusal is terminal but never recorded: the marker
-        // may sit in an unposted draft (the composer's text is part of the
-        // rendered tree), so it is not proof that a send happened. The run
-        // fails without a record; a human checks the channel and either
-        // clears the composer or accepts the existing post.
-        const nonRetryable =
-          result.code === 2 ||
-          (note.errorCode !== null && NON_RETRYABLE_CODES.has(note.errorCode)) ||
-          note.refusalCode === "duplicate_post";
-        if (nonRetryable || attempt === options.maxAttempts) break;
-        await sleep(options.retryBaseSec * 1000 * 2 ** (attempt - 1));
+      /** @type {import("./state.mjs").AttemptRecord|null} */
+      let attemptRecord = null;
+      const markAttempt = async () => {
+        if (attemptRecord !== null) throw new Error("the daily send attempt was already marked");
+        const marker = /** @type {import("./state.mjs").AttemptRecord} */ ({
+          date: targetDate,
+          status: "attempted",
+          attemptedAt: new Date(now()).toISOString(),
+          attempts: 1,
+        });
+        await state.write(marker);
+        attemptRecord = marker;
+      };
+      const result = await attemptOnce(options, runStartedAt, markAttempt);
+      attempts.push(noteOf(1, result));
+      const p = result.payload;
+      if (options.mode === "dry-run" && p !== null && p.status === "dry-run") {
+        return { code: 0, payload: dailyPayload({ status: "dry-run", mode: options.mode, targetDate, attempts, record: null }) };
+      }
+      if (attemptRecord !== null && result.code === 0 && isVerifiedSend(result)) {
+        const recordedAt = new Date(now()).toISOString();
+        const record = /** @type {import("./state.mjs").PostedRecord} */ ({
+          date: targetDate,
+          status: "posted",
+          postedAt: recordedAt,
+          attempts: 1,
+          recordedAt,
+        });
+        await state.write(record);
+        return { code: 0, payload: dailyPayload({ status: "posted", mode: options.mode, targetDate, attempts, record }) };
+      }
+      if (attemptRecord !== null) {
+        return { code: 1, payload: dailyPayload({ status: "uncertain", mode: options.mode, targetDate, attempts, record: attemptRecord }) };
       }
       return { code: 1, payload: dailyPayload({ status: "failed", mode: options.mode, targetDate, attempts, record: null }) };
     } finally {
@@ -423,7 +417,8 @@ export async function runDailyJob({
    * @param {number} reportNow
    * @returns {Promise<ReportResult>}
    */
-  async function attemptOnce(options, reportNow) {
+  /** @param {DailyOptions} options @param {number} reportNow @param {() => Promise<void>} beforeSend */
+  async function attemptOnce(options, reportNow, beforeSend) {
     const runOne = runReport ?? runReportJob;
     /** @type {string[]} */
     const reportArgv = ["--mode", options.mode];
@@ -451,6 +446,7 @@ export async function runDailyJob({
         reportNow,
         sleep,
         settleMs,
+        beforeSend,
       });
     } catch (err) {
       return { code: 1, payload: { status: "error", error: { code: "internal", message: err instanceof Error ? err.message : String(err) } } };

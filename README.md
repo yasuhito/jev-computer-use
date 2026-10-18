@@ -18,9 +18,9 @@ contains three slices:
    explicit `--mode send` against an exact channel allowlist hands the text to
    the `jev-cu-browse` workflow. See
    [jev-cu-report](#jev-cu-report-qa2-daily-new-users-report). Its unattended
-   daily wrapper `jev-cu-daily` adds per-date durable idempotency, a run
-   lock, bounded retries, and systemd templates for one run per day at
-   10:00 JST. See
+   daily wrapper `jev-cu-daily` adds a durable pre-click attempt marker per
+   date, a run lock, single-attempt delivery, and systemd templates for one
+   run per day at 10:00 JST. See
    [jev-cu-daily](#jev-cu-daily-unattended-daily-schedule).
 
 Design reference: https://github.com/Sac-Y/Jev-cu (read its decision loop and
@@ -267,61 +267,38 @@ profile already recognized, followed by deterministic validation in code.
   break the run; otherwise the status is `unverified`.
 - **Emoji images, proven, never dropped.** Slack replaces a Unicode emoji in
   the composer and in a posted message with an `<img>`, and Chromium never
-  reads an image into a contenteditable's accessibility value (with any
-  `alt`), so the read-back of the QA² report lacked 👤 ⚖️ 📅 and refused
-  before the send click (2026-09-25). A profile may therefore supply
-  `inlineText`, which proves the text an element stands for; the adapter then
-  reads the editable's DOM subtree with `DOM.describeNode` (already allowed;
-  no new CDP method) and reconstructs its text (`domText`: text nodes, `<br>`
-  and block boundaries as LF, proven elements as their text). The read-back
-  and the send-time check pass only when the subtree holds no unresolved
-  element (an image or other opaque element the profile cannot prove), and,
-  when it holds a proven element, the accessibility value equals the DOM text
-  without the proven elements and the DOM text with them equals the caller
-  text, both through `paragraphEqual`; without a proven element the
-  accessibility value alone decides as before. When the accessibility
-  sequence match finds no posted message, a message container whose DOM text
-  holds a proven element verifies only if its canonical lines carry the text
-  as one contiguous run and the run's non-emoji text also appears in the
-  container's accessibility text. The Slack profile (`slackEmojiText`) proves
-  an `<img>` or `data-stringify-emoji` element only for the closed
-  `SLACK_EMOJI` set (`:bust_in_silhouette:` 👤, `:scales:` ⚖️, `:date:` 📅)
-  when every nonempty identity field agrees: shortcode attributes (`data-id`,
-  `data-stringify-text`, `data-stringify-emoji`, and a shortcode `alt`).
-  No signal, disagreeing signals, an
-  unknown, custom, or skin-tone shortcode, or another emoji is unproven and
-  refuses (or leaves the post `unverified`); a missing, extra, changed, or
-  moved emoji is a text difference like any other. A localized `alt` is
-  excluded from the identity fields in two observed shapes. The ja-JP client
-  posts `<img data-stringify-type="emoji" data-stringify-emoji=":scales:" alt=":天秤:">`
-  (observed read-only on 2026-09-25), so a colon-wrapped `alt` of letters,
-  digits, and shortcode punctuation with at least one non-ASCII character is
-  skipped, not treated as an identity field, only when the element also
-  carries `data-stringify-type="emoji"` and a `data-stringify-emoji` in
-  `SLACK_EMOJI`. An ASCII `alt` is still an identity field that must agree,
-  and a localized `alt` without that stable identity proves nothing. Its
-  composer instead drafts
-  `<img class="emoji" data-id=":scales:" data-stringify-text=":scales:" data-title=":天秤:" alt="天秤 絵文字">`
-  (observed read-only on 2026-09-25, when the deployed 9ee0b41 matcher
-  refused that draft with `text_mismatch` before the send click), so a spoken
-  `alt` of space-separated words of letters, digits, and shortcode
-  punctuation with at least one non-ASCII character is skipped only on an
-  `<img>` whose `data-id` is in `SLACK_EMOJI` and whose `data-stringify-text` is exactly the same
-  shortcode. The spoken `alt`, `data-title`, and the asset cannot prove an
-  emoji on their own; an emoji character or an ASCII label such as
-  `scales emoji` in `alt` is never skipped. Chromium leaves the composer's
-  image `alt` out of the editable's accessibility value (checked in
-  `test/browser-e2e.test.mjs`); the live composer read-back with this rule is
-  not yet observed.
+  reads image-backed emoji out of the editable's accessibility value, so the
+  QA² report's accessibility-only read-back lacked its emoji characters
+  (reproduced 2026-09-25). The profile now supplies an exact text tokenizer and
+  a typed inline-emoji classifier; the adapter reads the editable's DOM
+  subtree with `DOM.describeNode` (already allowed; no new CDP method) and
+  compares text and emoji slots in order, with `paragraphEqual` preserving the
+  canonical paragraph rules. Only the Slack profile recognizes the observed
+  `<img class="emoji">` composer and `<img class="c-emoji__img">` posted
+  shapes. An unrecognized inline element, missing/extra/moved emoji slot, text
+  change, or positively contradictory identity refuses before the send click.
+  A recognized Slack emoji image with unknown identity can pass the composer
+  check only when the exact emoji-token count and positions match and the
+  accessibility value matches all non-emoji text; the read-back reports that
+  identity as `unproven`. After sending, a match must be one exact contiguous
+  run inside a profile-declared message container, each emoji identity must
+  be proven, and the non-emoji text must also be exposed by the accessibility
+  tree. Missing or unproven post evidence leaves the outcome `unverified`.
+  Locale-specific spoken or localized `alt` values are ignored only beside
+  stable serialized identity fields observed on the ja-JP client. The closed
+  report emoji set is `:bust_in_silhouette:` 👤, `:scales:` ⚖️, `:date:` 📅,
+  and `:chart_with_upwards_trend:` 📈; a known contradictory shortcode or
+  emoji-character `alt` is not treated as an unknown placeholder.
 - **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
   unless the requested name is exactly the leading name of the chosen
   destination's name (decoration such as `(channel)`, `（チャンネル）`, or
   `, 3 unread` may follow; `qa2-metrics-old` never matches `qa2-metrics`),
   and `duplicateMarker` accepts one marker or a list and refuses
-  (`duplicate_post`) to draft or send when the destination's currently rendered
-  accessibility tree contains any marker. This duplicate check is best-effort
-  defense in depth: virtualized history may omit an earlier post, and
+  (`duplicate_post`) to draft or send when a profile-declared posted-message
+  container carries any marker. Composer drafts are excluded and never
+  cleared. This duplicate check is best-effort defense in depth: virtualized
+  history may omit an earlier post, and
   concurrent runs can both pass the non-atomic check. `jev-cu-report` checks
   both the current visible title and the idempotency key retained by older
   posts.
@@ -459,14 +436,15 @@ this reason. Both the fake and the served page also turn the emoji of
 `SYNTHETIC_EMOJI` into images the way Slack does (a spoken ja-JP `alt` image
 with `data-id`/`data-stringify-text` in the composer, a `data-stringify-emoji`
 image with the ja-JP localized `alt` in a posted rich-text section), so the
-composer's accessibility value lacks them and only the proven DOM reading
-verifies; `👥` is a counterexample the profile cannot prove.
+composer's accessibility value lacks them. Recognized report emoji images
+may pass pre-send only at the exact intended positions; post-send verification
+requires proven identity. Unrecognized inline elements refuse.
 
 `test/browser-e2e.test.mjs` runs the send workflow against the served
 `tree` page with the self-DM in a real headless Chromium (localhost only,
 offline label decisions) and checks the 2026-09-25 refusal with
 accessibility text alone, the proven send and post verification, the rendered
-four-line layout, the duplicate rerun, and refusal before the send click of
+five-line layout, the duplicate rerun, and refusal before the send click of
 a composer emoji whose typed shortcode pair is spoofed. It is skipped unless
 `JEV_CU_E2E_CHROME` names a Chromium binary (Node 22+):
 `JEV_CU_E2E_CHROME=$(command -v chromium) node --test test/browser-e2e.test.mjs`.
@@ -492,9 +470,9 @@ views and columns this slice uses follow the official reference
 | View | Columns used | Purpose |
 | --- | --- | --- |
 | `ACCOUNT_GAMES` | `ACCOUNT_NAME`, `GAME_NAME`, `GAME_ID`, `ENVIRONMENT_NAME`, `ENVIRONMENT_ID`, `UNITY_PROJECT_ID` | resolve QA2 and its Live environment at run time; no `GAME_ID` is hard-coded |
-| `ACCOUNT_USERS` | `GAME_ID`, `ENVIRONMENT_ID`, `USER_ID`, `START_DATE` (DATE) | one row per user; `START_DATE` is the player's start date, the fact the event and fact views expose as `PLAYER_START_DATE` |
+| `ACCOUNT_USERS` | `GAME_ID`, `ENVIRONMENT_ID`, `USER_ID`, `START_DATE` (DATE) | daily and cumulative distinct-user counts; `START_DATE` is the player's start date, the fact the event and fact views expose as `PLAYER_START_DATE` |
 
-The two statements (`src/unity/data-access.mjs`) are single `SELECT`s with
+The three statements (`src/unity/data-access.mjs`) are single `SELECT`s with
 positional bindings; the database, schema, warehouse, and role travel as
 request context, so no identifier is ever interpolated into SQL:
 
@@ -512,6 +490,13 @@ WHERE GAME_ID = ? AND ENVIRONMENT_ID = ?
   AND START_DATE >= TO_DATE(?, 'YYYY-MM-DD') AND START_DATE < TO_DATE(?, 'YYYY-MM-DD')
 GROUP BY START_DATE
 ORDER BY START_DATE
+```
+
+```sql
+SELECT COUNT(DISTINCT USER_ID) AS CUMULATIVE_USERS
+FROM ACCOUNT_USERS
+WHERE GAME_ID = ? AND ENVIRONMENT_ID = ?
+  AND START_DATE < TO_DATE(?, 'YYYY-MM-DD')
 ```
 
 Game resolution is code: rows whose `GAME_NAME` equals `QA2` exactly must
@@ -533,6 +518,11 @@ All dates are UTC calendar days. With the current clock:
 - **New users on a day**: `COUNT(DISTINCT USER_ID)` of users whose player
   start date is that day. Days with no row count 0 and are listed in
   `missingDates` for audit; the Slack message does not add a missing-row note.
+- **Cumulative users**: `COUNT(DISTINCT USER_ID)` for the selected game and
+  environment with `START_DATE < window.end`. This counts distinct users with
+  observed start dates through `reportDate` in the available `ACCOUNT_USERS`
+  history; source-history coverage is not asserted. SQL excludes null user IDs
+  and start dates.
 - **dayBefore**: `reportDate - 1`; `delta = report - dayBefore`;
   `deltaPercent = delta / dayBefore * 100`, null when `dayBefore` is 0.
 - **trailing7DayAverage**: mean of the 7 days `reportDate - 7 .. reportDate - 1`
@@ -545,12 +535,12 @@ All dates are UTC calendar days. With the current clock:
   It remains in the typed report and CLI payload, but is no longer printed in
   Slack. The workflow checks the plain visible title as the marker for new
   posts and also checks this key to recognize posts from the previous message
-  format. Both checks use the currently rendered accessibility tree, so this
-  remains a best-effort duplicate defense, not durable exactly-once delivery.
+  format. Both checks search profile-declared posted-message containers,
+  never composer drafts, and remain a best-effort duplicate defense.
 
-Slack message (plain text, exactly four lines; no markup, source footer, or
+Slack message (plain text, exactly five lines; no markup, source footer, or
 missing-row note; identical input gives identical output). The composer posts
-inserted text literally, so the message carries no `*` bold markers; the three
+inserted text literally, so the message carries no `*` bold markers; the four
 Unicode emoji prefixes are the only decoration:
 
 ```
@@ -558,6 +548,7 @@ QA² 新規ユーザー｜9/24（UTC）
 👤 1人（前日より +1人）
 ⚖️ 直近7日平均 2人 より 1人少なめ（-50%）
 📅 直近7日（9/18→9/24）：2 → 4 → 3 → 3 → 1 → 0 → 1人
+📈 累計 9,876人（9/24 時点）
 ```
 
 Source auditability is retained in the `jev-cu-report` JSON payload's
@@ -594,12 +585,13 @@ before any request. `parameters.TIMEZONE` is `UTC`; result cells are decoded
 from the documented SQL API encoding (DATE as days since epoch, NUMBER as an
 integer string).
 
-Cost: the job runs two small queries once a day. Expect to run it on an
-X-Small warehouse with auto-suspend set to the minimum (60 s) and auto-resume
-on, so compute is billed for roughly one minimum billing period per run;
-`ACCOUNT_USERS` is scanned once per run. This README does not claim a fixed
-bill: warehouse settings, the share's size, and any other use of the
-warehouse determine it, and none of them is created or changed by this code.
+Cost: the report runs three small queries once a day: game/environment
+resolution, the daily series, and the cumulative distinct-user count. Expect
+to run it on an X-Small warehouse with auto-suspend set to the minimum (60 s)
+and auto-resume on. `ACCOUNT_USERS` is scanned for both aggregates. This
+README does not claim a fixed bill: warehouse settings, the share's size, and
+any other use of the warehouse determine it, and none of them is created or
+changed by this code.
 
 ### Usage
 
@@ -615,9 +607,10 @@ Send, only with an explicit request and an exact allowlist, through the
 `jev-cu-browse` workflow (Chrome with remote debugging, `TYPESAFE_API_KEY` in
 the environment). The destination must equal one `--allow-destination`
 character for character; the workflow then additionally requires the chosen
-sidebar link to name it exactly, refuses if the currently rendered channel
-content shows the visible report title or a legacy idempotency key, and keeps
-all freshness, read-back, and post-verification guards:
+sidebar link to name it exactly, refuses if a currently rendered
+posted-message container shows the visible report title or a legacy
+idempotency key, and keeps all freshness, read-back, and post-verification
+guards:
 
 ```sh
 node bin/jev-cu-report.mjs --mode send --destination qa2-metrics --allow-destination qa2-metrics
@@ -655,44 +648,46 @@ and validation errors (including `destination_not_allowed`).
 `npm test` covers the read-only guard, SQL API encoding and the JWT (verified
 against the generated public key), the REST executor with a scripted fetch
 (polling, partitions, retries, auth failures), game resolution and every
-failure mode, the report arithmetic, the message, and the CLI end to end with
-the fake CDP session over the synthetic Slack page: a send that posts the
-exact message, a duplicate refusal, and an exact-destination refusal.
+failure mode, the report arithmetic, the five-line message, and the CLI end to
+end with the fake CDP session over the synthetic Slack page: a send that posts
+the exact message, a duplicate refusal, and an exact-destination refusal.
 `test/fixtures/unity-data-access.json` records result sets
 in the SQL API encoding with the official column names, plus the official
 source-side columns of the two views (`schema`); the schema compile test
-resolves every identifier and binding of the generated statements against
+resolves every identifier and binding of the three generated statements against
 it. The fixture data is synthetic, not a real account. Tests inject that
 fixture executor and a fixed clock
 through the programmatic CLI seam, so the test suite touches neither Snowflake
 nor Slack.
 
-A live read-only smoke (two `SELECT`s under process-scoped credentials, no
+A live read-only smoke (three `SELECT`s under process-scoped credentials, no
 Slack) is outside CI. Unattended execution is wrapped by `jev-cu-daily`, which
-serializes executions and adds durable per-date idempotency on top of the
-rendered-page check (it alone cannot prevent duplicates from concurrent runs
-or unloaded history).
+serializes executions, records one durable send attempt per date, and retains
+the rendered-page duplicate check. That page check alone cannot prevent
+duplicates from concurrent runs or unloaded history.
 
 ## jev-cu-daily: unattended daily schedule
 
 `jev-cu-daily` runs the QA2 report once per target date for an unattended
-scheduler (a systemd timer on the deployment host). One invocation posts at
-most one report, and it adds exactly the three properties a single-shot
-`jev-cu-report --mode send` run cannot provide:
+scheduler (a systemd timer on the deployment host). It adds durable
+single-attempt state and a run lock around the single-shot
+`jev-cu-report --mode send` workflow:
 
-- **Durable per-date idempotency.** The target date is the last complete UTC
-  day, computed by the report's own date rule from the run's clock (at
-  10:00 JST = 01:00 UTC, that is yesterday). If
-  `<state-dir>/records/<date>.json` already marks the date posted, the run
-  does nothing (`already-posted`): no query, no browser. Otherwise it runs
-  the report in send mode and, only when the workflow verified the send, it
-  writes the record atomically (temp file + rename). Any other outcome -
-  runtime error, refusal, `unverified`, `no_match`, `escalate` - writes no
-  record, so a later run can resume the date without a second post: the
-  workflow's duplicate-marker guard refuses to send again while this date's
-  visible title or a legacy idempotency key is in the channel. A corrupt or
-  unreadable record fails the run (exit 1) instead of being ignored: fail
-  closed, never risk a second post.
+- **Durable single attempt.** The target date is the last complete UTC day,
+  computed by the report's own date rule from the run's clock (at 10:00 JST
+  = 01:00 UTC, that is yesterday). If
+  `<state-dir>/records/<date>.json` marks the date `posted`, the run does
+  nothing (`already-posted`); if it marks the date `attempted`, the run does
+  nothing (`already-attempted`, exit 1). Both skip querying and browser work.
+  Immediately before the send click, an atomic, fsynced `attempted` record is
+  written. It becomes `posted` only after the workflow verifies the exact
+  message and emoji identities. Any outcome after that marker that is not
+  verified (`unverified`, transport error, or interruption) stays attempted
+  and is never retried automatically; a human must inspect the channel before
+  deciding what to do. Failures before the marker leave no attempt record.
+  Duplicate detection searches posted message containers, not composer drafts;
+  `duplicate_post` is not success and writes no attempt marker because no send
+  click was reached. A corrupt, unreadable, or mismatched record fails closed.
 - **Single-run exclusion.** An exclusive lock file `<state-dir>/run.lock`
   (O_EXCL create, holding pid, start instant, and the kernel boot id) is
   held for the whole run. A live run makes a second invocation skip
@@ -701,15 +696,6 @@ most one report, and it adds exactly the three properties a single-shot
   from before a reboot), its pid no longer exists, or it is older than the
   staleness bound (12 h, covers pid reuse). An unreadable-but-young lock is
   treated as live: its creator may still be writing it.
-- **Bounded retry.** A failed attempt is retried up to `--max-attempts`
-  (default 3) with exponential backoff (`--retry-base-sec` × 2^(n−1),
-  default base 60 s). Two classes fail on the first attempt because no
-  backoff can fix them: configuration errors (`missing_key`,
-  `missing_snowflake_config`, usage, a destination outside the allowlist)
-  and the `duplicate_post` refusal. The duplicate refusal is never recorded
-  as success: the marker may sit in an unposted draft (the composer's text
-  is part of the rendered tree), so it is not proof that a send happened.
-  The run then fails with no record and a human checks the channel.
 
 Unattended logs stay clean: the printed payload carries statuses, error
 codes, and closed-set diagnostic labels only - never report numbers, the
@@ -729,8 +715,6 @@ channel `qa2`; flags and environment variables cannot redirect it.
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `--state-dir DIR` | durable state directory (records + run lock); must survive reboots | required |
-| `--max-attempts N` | send attempts per run, 1..10 | `3` |
-| `--retry-base-sec N` | backoff base seconds, 0..3600 | `60` |
 | `--dry-run` | run the report in dry-run mode, write no record (wiring check; needs no `TYPESAFE_API_KEY` or browser) | off |
 | `--profile`, `--cdp`, `--target`, `--min-confidence`, `--max-candidates`, `--model` | as in `jev-cu-report` | same defaults |
 
@@ -741,27 +725,30 @@ stored.
 ### Output
 
 One JSON object on stdout: `tool` (`jev-cu-daily`), `version`, `status`,
-`mode` (`send` or `dry-run`), `targetDate`, `attempts` (per attempt: `attempt`,
-the report's `status`, `refusalCode`, `errorCode`, `completed`, `stage`, and
-`check` - codes and closed-set labels only), and `record`
-(`date`, `status: "posted"`, `postedAt`, `attempts`, `recordedAt`) when one
-was written or already existed. `status` is one of `posted`,
-`already-posted` (recorded date), `skipped-locked` (another run holds the
-lock), `dry-run`, or `failed`. A usage error adds `error.code: "usage"`.
+`mode` (`send` or `dry-run`), `targetDate`, `attempts` (zero or one diagnostic note: `attempt`, report `status`,
+`refusalCode`, `errorCode`, `completed`, `stage`, `check`, `emojiIdentity`,
+and `verification`; codes and closed-set labels only), and `record`. A record
+is either an `attempted` marker (`date`, `status: "attempted"`, `attemptedAt`,
+`attempts: 1`) or a verified `posted` record (`date`, `status: "posted"`,
+`postedAt`, `attempts`, `recordedAt`; new records store `attempts: 1`, while
+an existing record may be from an older version). `status` is one of `posted`,
+`already-posted`, `already-attempted`, `skipped-locked`, `dry-run`, `uncertain`,
+or `failed`. A usage error adds `error.code: "usage"`.
 `completed` is the workflow's last completed stage (`navigate`, `draft`,
 `send`, or null). For a `text_mismatch` refusal, `stage` says where it
-happened (`draft_precheck`: the composer was not empty; `draft_readback`:
-the insertText read-back; `send_precheck`: the composer check before the send
-decision; `send_gate`: the same check inside the send click's gate) and
-`check` says which check refused (`not_empty`, `not_observable`,
-`not_describable`, `unresolved_inline`, `ax_value_differs`,
-`ax_dom_disagree`, or `inline_text_differs`, as in `EDITOR_CHECKS` in
-`src/cdp/adapter.mjs`). Absent labels are null; unrecognized labels become
-`other`, never page text.
+happened (`draft_precheck`, `draft_readback`, `send_precheck`, or `send_gate`)
+and `check` is one of `not_empty`, `not_observable`, `not_describable`,
+`unresolved_inline`, `ax_value_differs`, `ax_dom_disagree`,
+`inline_text_differs`, or `emoji_identity_contradicted`. Absent labels are null;
+unrecognized labels become `other`, never page text. Post verification reports
+`emojiIdentity` (`proven`, `unproven`, `contradicted`, `not_applicable`, or
+`not_verified`) and `verification` (`verified`, `emoji_identity_unproven`,
+`emoji_identity_contradicted`, `text_mismatch`, `text_not_exposed`, or
+`not_found`) when present.
 
 Exit codes: `0` for posted, already-posted, skipped-locked, and dry-run; `1`
-for failed (retries exhausted or a non-retryable failure); `2` for usage
-errors. `--help` prints usage on stderr and exits 0.
+for already-attempted, uncertain, or failed; `2` for usage errors. `--help`
+prints usage on stderr and exits 0.
 
 ### Deployment (systemd)
 
@@ -791,9 +778,9 @@ operation; none of it is automated by this repository):
 ### Tests
 
 `npm test` covers the wrapper end to end offline: the fixture executor and
-the fake CDP session over the synthetic page (post, record, second-run skip,
-duplicate refusal, unverified retries, the composer latch, concurrent runs
-under the real lock), the state machinery against a temporary directory
+the fake CDP session over the synthetic page (verified post, attempt marker,
+second-run skip, duplicate refusal, uncertain no-resend, composer latch, and
+concurrent runs under the real lock), the state machinery against a temporary directory
 (atomic records, corrupt-record failure, boot-id/pid/age staleness), and the
 CLI contract including `--help` and usage errors through the committed bin.
 No network, no Slack, no secrets.

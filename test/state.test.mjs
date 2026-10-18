@@ -38,13 +38,29 @@ test("FileRecordStore round-trips one record per date and reads nothing for an u
   }
 });
 
+test("an attempted marker is durable and is replaced only by a verified posted record", async () => {
+  const dir = await tempState();
+  try {
+    const store = new FileRecordStore(dir);
+    const attempted = { date: "2026-09-20", status: /** @type {const} */ ("attempted"), attemptedAt: "2026-09-21T01:00:00Z", attempts: /** @type {const} */ (1) };
+    await store.write(attempted);
+    assert.deepEqual(await store.read("2026-09-20"), attempted);
+    const posted = { date: "2026-09-20", status: /** @type {const} */ ("posted"), postedAt: "2026-09-21T01:01:00Z", attempts: 1, recordedAt: "2026-09-21T01:01:00Z" };
+    await store.write(posted);
+    assert.deepEqual(await store.read("2026-09-20"), posted);
+    assert.deepEqual(await readdir(join(dir, "records")), ["2026-09-20.json"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a corrupt or unknown-shape record is an error, never silently ignored", async () => {
   const dir = await tempState();
   try {
     const store = new FileRecordStore(dir);
     const { mkdir } = await import("node:fs/promises");
     await mkdir(join(dir, "records"), { recursive: true });
-    for (const text of ["{not json", '{"status":"posted"}', '{"status":"failed","date":"2026-09-20"}']) {
+    for (const text of ["{not json", '{"status":"posted"}', '{"status":"failed","date":"2026-09-20"}', '{"status":"attempted","date":"2026-09-19","attemptedAt":"2026-09-21T01:00:00Z","attempts":1}']) {
       await writeFile(join(dir, "records", "2026-09-20.json"), text);
       await assert.rejects(store.read("2026-09-20"), /investigate/);
     }

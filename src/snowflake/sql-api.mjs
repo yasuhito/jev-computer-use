@@ -31,7 +31,7 @@ import { buildKeyPairJwt, loadPrivateKey } from "./keypair-jwt.mjs";
 /** @typedef {import("./executor.mjs").ResultSet} ResultSet */
 /** @typedef {import("./executor.mjs").Statement} Statement */
 
-export const USER_AGENT = "jev-cu-report/0.1.0";
+export const USER_AGENT = "jev-cu-report/0.2.0";
 export const DEFAULT_STATEMENT_TIMEOUT_SECONDS = 60;
 export const DEFAULT_RETRY_ATTEMPTS = 3;
 export const DEFAULT_RETRY_BACKOFF_MS = Object.freeze([1_000, 2_000, 4_000]);

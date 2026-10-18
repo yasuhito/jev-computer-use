@@ -334,13 +334,13 @@ test("profile registry exposes the named profiles and defaults to slack", () => 
 
 test("slack emoji images are proven only from agreeing identity signals in the closed emoji set", () => {
   /** @param {Record<string, string>} attributes @param {string} [nodeName] */
-  const text = (attributes, nodeName = "IMG") => slackEmojiText({ nodeName, attributes });
+  const text = (attributes, nodeName = "IMG") => slackEmojiText({ nodeName, attributes: nodeName === "IMG" ? { class: "emoji", ...attributes } : attributes });
   const asset = (/** @type {string} */ file) => `https://a.slack-edge.com/production-standard-emoji-assets/15.0/google-medium/${file}.png`;
   // The composer shape: empty alt, shortcode in data attributes.
   assert.equal(text({ alt: "", src: asset("1f464"), "data-id": ":bust_in_silhouette:", "data-stringify-text": ":bust_in_silhouette:" }), "👤");
   // An ASCII-alt posted-message variant: shortcode alt, descriptive aria-label.
   assert.equal(text({ alt: ":scales:", "aria-label": "scales emoji", "data-stringify-type": "emoji", "data-stringify-emoji": ":scales:", src: asset("2696-fe0f") }), "⚖️");
-  assert.equal(text({ "data-stringify-emoji": ":date:" }, "SPAN"), "📅");
+  assert.equal(text({ "data-stringify-emoji": ":date:" }, "SPAN"), undefined);
   // Unproven: nothing, disagreement, other emoji, custom or combined shortcodes.
   assert.equal(text({ alt: "" }), null);
   assert.equal(text({ alt: "", src: "/static/blank.png" }), null);
@@ -359,13 +359,15 @@ test("slack emoji images are proven only from agreeing identity signals in the c
   assert.equal(text({ class: "c-emoji" }, "SPAN"), undefined);
   assert.equal(text({ href: "https://example.com/a:b:c" }, "A"), undefined);
   assert.equal(SLACK_PROFILE.inlineText, slackEmojiText);
+  assert.equal(slackEmojiText({ nodeName: "IMG", attributes: { alt: "👤" } }), undefined);
 });
 
 test("slack emoji images skip a ja-JP localized alt only beside a proven emoji type and data-stringify-emoji", () => {
   /** @param {Record<string, string>} attributes @param {string} [nodeName] */
-  const text = (attributes, nodeName = "IMG") => slackEmojiText({ nodeName, attributes });
+  const text = (attributes, nodeName = "IMG") => slackEmojiText({ nodeName, attributes: nodeName === "IMG" ? { class: "c-emoji__img", ...attributes } : attributes });
   /** The posted-message attributes observed on the real ja-JP client, 2026-09-25. */
   const posted = (/** @type {string} */ code, /** @type {string} */ alt) => ({
+    class: "c-emoji__img",
     "data-stringify-type": "emoji",
     "data-stringify-emoji": code,
     alt,
@@ -400,7 +402,7 @@ test("slack emoji images skip a ja-JP localized alt only beside a proven emoji t
   assert.equal(text(posted(":scales:", "天秤")), null);
   assert.equal(text(posted(":scales:", ":👥:")), null);
   assert.equal(text(posted(":scales:", ":天秤: :date:")), null);
-  assert.equal(text(posted(":scales:", "⚖️")), null);
+  assert.equal(text(posted(":scales:", "⚖️")), "⚖️");
   // A non-emoji image with a localized alt stays unproven.
   assert.equal(text({ alt: ":天秤:", src: "/static/photo.png" }), null);
   assert.equal(text({ alt: ":天秤:" }, "SPAN"), undefined);
@@ -408,7 +410,7 @@ test("slack emoji images skip a ja-JP localized alt only beside a proven emoji t
 
 test("slack composer emoji images skip a ja-JP spoken alt only beside an agreeing data-id and data-stringify-text", () => {
   /** @param {Record<string, string>} attributes @param {string} [nodeName] */
-  const text = (attributes, nodeName = "IMG") => slackEmojiText({ nodeName, attributes });
+  const text = (attributes, nodeName = "IMG") => slackEmojiText({ nodeName, attributes: nodeName === "IMG" ? { class: "emoji", ...attributes } : attributes });
   /** The composer attributes observed on the real ja-JP client, 2026-09-25 (asset path shortened). */
   const composer = (/** @type {string} */ code, /** @type {string} */ alt, /** @type {string} */ title = ":天秤:") => ({
     class: "emoji",
@@ -446,7 +448,7 @@ test("slack composer emoji images skip a ja-JP spoken alt only beside an agreein
   assert.equal(text(composer(":scales:", "天秤 絵文字", ":日付:")), "⚖️");
   assert.equal(text({ alt: "天秤 絵文字", "data-title": ":天秤:", style: "background-image: url(x/2696-fe0f.png)" }), null);
   // Only a spoken label of words is skipped, never an emoji character, a shortcode, or a mixed shape.
-  assert.equal(text(composer(":scales:", "⚖️")), null);
+  assert.equal(text(composer(":scales:", "⚖️")), "⚖️");
   assert.equal(text(composer(":scales:", "⚖️ 絵文字")), null);
   assert.equal(text(composer(":scales:", "天秤 :date:")), null);
   assert.equal(text(composer(":scales:", "天秤  絵文字")), null);
@@ -454,11 +456,11 @@ test("slack composer emoji images skip a ja-JP spoken alt only beside an agreein
   assert.equal(text(composer(":scales:", "天秤\n絵文字")), null);
   // The composer rule is for images only.
   assert.equal(text(composer(":scales:", "天秤 絵文字"), "SPAN"), undefined);
-  assert.equal(text({ ...composer(":scales:", "天秤 絵文字"), "data-stringify-type": "emoji" }, "SPAN"), null);
+  assert.equal(text({ ...composer(":scales:", "天秤 絵文字"), "data-stringify-type": "emoji" }, "SPAN"), undefined);
 });
 
 test("DOM text uses only the supplied profile's inline element proof", () => {
-  const root = { nodeType: 1, nodeName: "SPAN", children: [{ nodeType: 1, nodeName: "IMG", attributes: ["data-id", ":bust_in_silhouette:"] }] };
+  const root = { nodeType: 1, nodeName: "SPAN", children: [{ nodeType: 1, nodeName: "IMG", attributes: ["class", "emoji", "data-id", ":bust_in_silhouette:"] }] };
   assert.deepEqual(domText(root, slackEmojiText), { text: "👤", plain: "", replaced: 1, unresolved: 0 });
   assert.equal(domText(root, () => "custom").text, "custom");
   assert.equal(domText(root, () => undefined).unresolved, 1);

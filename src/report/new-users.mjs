@@ -14,6 +14,10 @@
  * - trend: against the trailing 7-day average; "flat" when the absolute
  *   deltaPercent is at most FLAT_BAND_PERCENT, "up"/"down" by sign; when
  *   the average is 0, "up" if the day is positive, else "flat".
+ * - cumulativeUsers: the distinct measured USER_ID count with START_DATE
+ *   before the exclusive end of the report window, as a point-in-time count.
+ *   USER_ID is not evidence of one real person, and ACCOUNT_USERS history
+ *   coverage is not asserted.
  * - idempotencyKey: one value per (game, environment, reportDate), enabling
  *   duplicate checks or durable idempotency outside this pure report module.
  */
@@ -43,6 +47,7 @@ export const IDEMPOTENCY_PREFIX = "unity-new-users";
  * @property {{start: string, end: string, days: number}} window
  * @property {string} reportDate
  * @property {{date: string, newUsers: number}} previousDay
+ * @property {{asOf: string, count: number}} cumulativeUsers
  * @property {DailyNewUsers[]} series
  * @property {string[]} missingDates window days with no row, counted as 0
  * @property {{dayBefore: Comparison & {date: string}, trailing7DayAverage: Comparison & {from: string, to: string, days: number}, trend: "up"|"down"|"flat"}} comparison
@@ -91,12 +96,13 @@ export function idempotencyKey(game, reportDate) {
 }
 
 /**
- * @param {{game: GameEnvironment, window: ReportWindow, rows: DailyNewUsers[], generatedAt: string}} input
+ * @param {{game: GameEnvironment, window: ReportWindow, rows: DailyNewUsers[], cumulativeUsers: number, generatedAt: string}} input
  * @returns {NewUsersReport}
  */
-export function buildNewUsersReport({ game, window, rows, generatedAt }) {
+export function buildNewUsersReport({ game, window, rows, cumulativeUsers, generatedAt }) {
   if (!isIsoDate(window.start) || !isIsoDate(window.end) || !isIsoDate(window.reportDate)) throw new Error("window dates must be YYYY-MM-DD");
   if (addDays(window.end, -1) !== window.reportDate) throw new Error("reportDate must be the day before the window end");
+  if (!Number.isSafeInteger(cumulativeUsers) || cumulativeUsers < 0) throw new Error("cumulativeUsers must be a non-negative safe integer");
   const dates = datesBetween(window.start, window.end);
   if (dates.length !== window.days || dates.length < TRAILING_DAYS + 1) throw new Error("window must hold days complete days, at least 8");
   /** @type {Map<string, number>} */
@@ -131,6 +137,7 @@ export function buildNewUsersReport({ game, window, rows, generatedAt }) {
     window: { start: window.start, end: window.end, days: window.days },
     reportDate,
     previousDay: { date: reportDate, newUsers: current },
+    cumulativeUsers: { asOf: reportDate, count: cumulativeUsers },
     series,
     missingDates,
     comparison: {

@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { runDailyJob } from "../src/schedule/daily.mjs";
-import { runReportJob } from "../bin/jev-cu-report.mjs";
 import { createFakeCdp } from "./fake-cdp.mjs";
 import { loadSyntheticPage } from "./fixtures/synthetic-slack.mjs";
 import { decideByLabel, fakeClock } from "./helpers.mjs";
@@ -20,9 +19,6 @@ const SEND_FLOW = [/^qa2(?:$|\s|,|\()/, /^Message #qa2(?:$|\s)/, /^Send now/];
 /** 09:00 UTC on the 21st; the target date (last complete UTC day) is 2026-09-20. */
 const NOW_MS = Date.parse("2026-09-21T09:00:00Z");
 const DATE = "2026-09-20";
-const cExecutor = await loadFixtureExecutor(FIXTURE);
-const cClock = fakeClock();
-cClock.advance(NOW_MS - cClock.now());
 
 /**
  * @param {Parameters<typeof createFakeCdp>[0]} [options]
@@ -40,9 +36,6 @@ function createDailyFakeCdp(options = {}) {
 /** @typedef {NonNullable<DailyIo["decide"]>} DecideFn */
 /** @typedef {NonNullable<DailyIo["connect"]>} ConnectFn */
 /** @typedef {NonNullable<DailyIo["executor"]>} Executor */
-
-/** @param {number} attempts */
-const sendFlow = (attempts) => Array.from({ length: attempts }, () => SEND_FLOW).flat();
 
 /**
  * @typedef {object} CaptureOptions
@@ -71,7 +64,7 @@ async function captureIo(overrides = {}) {
     stderr: { write: (/** @type {string} */ c) => err.push(c) },
     env: overrides.env ?? {},
     executor,
-    decide: overrides.decide ?? decideByLabel(sendFlow(3)),
+    decide: overrides.decide ?? decideByLabel(SEND_FLOW),
     connect:
       overrides.connect ??
       (async () => {
@@ -115,7 +108,8 @@ test("the daily CLI posts once, records the date, and prints a scrubbed payload"
     const posted = messages[0];
     assert.ok(posted);
     assert.match(posted, /^QA² 新規ユーザー｜9\/20（UTC）\n👤 /);
-    assert.equal(posted.split("\n").length, 4);
+    assert.equal(posted.split("\n").length, 5);
+    assert.match(posted, /📈 累計 9,876人（9\/20 時点）$/);
     assert.doesNotMatch(posted, new RegExp(KEY));
     assert.equal(fake.state.disconnected, true);
     // The daily payload itself carries no report data, message, destination, or key.
@@ -133,7 +127,7 @@ test("a second run for the same date posts nothing and queries nothing", async (
     assert.equal((await runDailyJob(c.io)).code, 0);
     const queriesAfterFirst = c.executor.calls.length;
     const messagesAfterFirst = c.sessions[0]?.currentMessages().length;
-    const second = await runDailyJob({ ...c.io, decide: decideByLabel(sendFlow(1)) });
+    const second = await runDailyJob({ ...c.io, decide: decideByLabel(SEND_FLOW) });
     assert.equal(second.code, 0);
     assert.equal(second.payload?.status, "already-posted");
     assert.equal(c.executor.calls.length, queriesAfterFirst);
@@ -144,9 +138,8 @@ test("a second run for the same date posts nothing and queries nothing", async (
   }
 });
 
-test("a duplicate-marker refusal ends the run without drafting and without a record", async () => {
-  // The marker may sit in an unposted draft as well as in a real post, so it
-  // is never recorded as success; a human checks the channel.
+test("a duplicate-marker refusal checks posted messages and ends without drafting or a record", async () => {
+  // A duplicate is evidence only when found in a rendered message container.
   const c = await captureIo({
     connect: async () => {
       const fake = createDailyFakeCdp();
@@ -200,9 +193,8 @@ test("a split-paragraph post verifies and records the date (the 2026-09-21 fix)"
   }
 });
 
-test("an unverified send is retried, never recorded, and fails the run at the bound", async () => {
+test("an unverified send leaves an attempted record and is not retried", async () => {
   const c = await captureIo({
-    extraArgv: ["--max-attempts", "2", "--retry-base-sec", "1"],
     connect: async () => {
       // Every attempt starts from a fresh page whose send click is swallowed;
       // the workflow clicks send but can never verify the post.
@@ -215,131 +207,87 @@ test("an unverified send is retried, never recorded, and fails the run at the bo
   try {
     const { code, payload } = await runDailyJob(c.io);
     assert.equal(code, 1);
-    assert.equal(payload?.status, "failed");
-    assert.equal(payload?.record, null);
-    assert.deepEqual(payload?.attempts.map((a) => a.status), ["unverified", "unverified"]);
-    assert.equal(c.sessions.length, 2);
-    // No record on disk: the date may be posted later, after a human checks the channel.
-    await assert.rejects(readFile(c.recordPath), { code: "ENOENT" });
+    assert.equal(payload?.status, "uncertain");
+    assert.equal(payload?.record?.status, "attempted");
+    assert.deepEqual(payload?.attempts.map((a) => a.status), ["unverified"]);
+    assert.equal(c.sessions.length, 1);
+    const onDisk = JSON.parse(await readFile(c.recordPath, "utf8"));
+    assert.equal(onDisk.status, "attempted");
     assert.equal(c.sessions[0]?.currentMessages().length, 0);
+    assert.equal(c.sessions[0]?.currentDraft().startsWith("QA² 新規ユーザー"), true);
   } finally {
     await c.cleanup();
   }
 });
 
-test("a retry after an unverified send hits the marker and still never records or double posts", async () => {
-  // The recovery path: a send's verification failed, no record was written,
-  // and by the retry the message is visible in the channel. The marker guard
-  // must refuse the second send; the run fails with no record (the marker
-  // alone is not proof of a send) and nothing is posted twice.
+test("a later run skips an uncertain attempt even if the message becomes visible", async () => {
+  // The send may have landed although verification failed. A durable attempt
+  // marker prevents an automatic second workflow without claiming success.
   const c = await captureIo({
-    decide: decideByLabel([...SEND_FLOW, /^qa2(?:$|\s|,|\()/]), // attempt 2 refuses at the duplicate check, right after the destination decision
     connect: async () => {
       const fake = createDailyFakeCdp();
-      if (c.sessions.length > 0) {
-        fake.state.messages.set("/client/T0SYNTH/C0QA2", [`QA2 new users (Live) for 2026-09-20 (UTC)\nNew users on 2026-09-20: 1,234\n... key: ${KEY}`]);
-      } else {
-        fake.state.posting = false; // attempt 1: the send click is swallowed, the workflow cannot verify
-      }
+      fake.state.posting = false;
       c.sessions.push(fake);
       return fake.session;
     },
   });
   try {
-    const { code, payload } = await runDailyJob(c.io);
-    assert.equal(code, 1);
-    assert.equal(payload?.status, "failed");
-    assert.equal(payload?.record, null);
-    assert.deepEqual(
-      payload?.attempts.map((a) => [a.status, a.refusalCode]),
-      [
-        ["unverified", null],
-        ["refused", "duplicate_post"],
-      ],
-    );
-    assert.equal(c.sessions.length, 2);
-    assert.equal(c.sessions[1]?.methodCalls("Input.insertText").length, 0);
-    await assert.rejects(readFile(c.recordPath), { code: "ENOENT" });
+    const first = await runDailyJob(c.io);
+    assert.equal(first.payload?.status, "uncertain");
+    assert.equal(first.payload?.record?.status, "attempted");
+    const queryCount = c.executor.calls.length;
+    c.sessions[0]?.state.messages.set("/client/T0SYNTH/C0QA2", [`QA2 users ${KEY}`]);
+    const second = await runDailyJob(c.io);
+    assert.equal(second.code, 1);
+    assert.equal(second.payload?.status, "already-attempted");
+    assert.equal(c.sessions.length, 1);
+    assert.equal(c.executor.calls.length, queryCount);
   } finally {
     await c.cleanup();
   }
 });
 
-test("a composer left holding an unposted draft is refused, never appended to", async () => {
-  // Unattended fail-safe: after a swallowed send the composer still holds the
-  // exact draft (Slack keeps per-channel drafts), so a later run refuses at
-  // insertText until a human clears it. The record stays unwritten. The draft
-  // carries yesterday's title marker, so the duplicate check passes and the
-  // refusal comes from the composer guard itself.
-  const sink = { write: () => {} };
-  const probe = await runReportJob({ argv: [], executor: cExecutor, env: {}, now: cClock.now, sleep: cClock.sleep, stdout: sink, stderr: sink });
-  const draft = /** @type {{message: unknown}} */ (probe.payload).message;
-  assert.equal(typeof draft, "string");
-  const staleDraft = /** @type {string} */ (draft).replaceAll("9/20", "9/19");
+test("an uncertain send leaves the composer draft untouched and blocks reruns", async () => {
   const c = await captureIo({
-    extraArgv: ["--max-attempts", "2", "--retry-base-sec", "1"],
-    decide: decideByLabel(sendFlow(2)),
     connect: async () => {
       const fake = createDailyFakeCdp();
-      if (c.sessions.length > 0) {
-        // The retry reconnects to the same channel, whose composer still
-        // holds the unposted draft from the first attempt.
-        fake.state.drafts.set("/client/T0SYNTH/C0QA2", staleDraft);
-      } else {
-        fake.state.posting = false; // the send click is swallowed; the draft stays
-      }
+      fake.state.posting = false;
       c.sessions.push(fake);
       return fake.session;
     },
   });
   try {
-    const { code, payload } = await runDailyJob(c.io);
-    assert.equal(code, 1);
-    assert.equal(payload?.status, "failed");
-    assert.equal(payload?.attempts.length, 2);
-    assert.equal(payload?.attempts[1]?.refusalCode, "text_mismatch");
-    assert.equal(payload?.attempts[1]?.completed, "navigate");
-    assert.equal(payload?.attempts[1]?.stage, "draft_precheck");
-    assert.equal(payload?.attempts[1]?.check, "not_empty");
-    const fake = c.sessions[1];
+    const first = await runDailyJob(c.io);
+    const fake = c.sessions[0];
     assert.ok(fake);
-    assert.equal(fake.currentDraft(), staleDraft);
+    assert.equal(first.code, 1);
+    assert.equal(first.payload?.status, "uncertain");
+    assert.match(fake.currentDraft(), /^QA² 新規ユーザー｜9\/20（UTC）/);
     assert.equal(fake.currentMessages().length, 0);
+    const second = await runDailyJob(c.io);
+    assert.equal(second.payload?.status, "already-attempted");
+    assert.equal(c.sessions.length, 1);
+    assert.match(fake.currentDraft(), /^QA² 新規ユーザー｜9\/20（UTC）/);
   } finally {
     await c.cleanup();
   }
 });
 
-test("a composer text refusal before the send click says where and which check refused, then the leftover draft ends the run (2026-09-26)", async () => {
-  // The 2026-09-26 run: attempt 1 drafted, then refused text_mismatch before
-  // the send click; attempt 2 found the marker in its own leftover draft and
-  // refused duplicate_post. Its notes kept only the codes, so which check
-  // refused was lost with the dropped report output. Here the composer's
-  // emoji images turn unprovable after a passing read-back.
+test("a composer refusal before the send boundary retains closed-set diagnostics and no marker", async () => {
   const c = await captureIo({
-    extraArgv: ["--retry-base-sec", "1"],
-    // Attempt 1 decides the destination and the composer; attempt 2 only the destination.
-    decide: decideByLabel([SEND_FLOW[0], SEND_FLOW[1], SEND_FLOW[0]].map((p) => /** @type {RegExp} */ (p))),
     connect: async () => {
       const fake = createDailyFakeCdp();
-      const first = c.sessions[0];
-      if (first !== undefined) {
-        // The retry reconnects to the same channel, whose composer still
-        // holds the unsent draft from the first attempt.
-        fake.state.drafts.set("/client/T0SYNTH/C0QA2", first.currentDraft());
-      } else {
-        const send = fake.session.send.bind(fake.session);
-        let inserted = false;
-        let treeReads = 0;
-        fake.session.send = async (method, params = {}) => {
-          const result = await send(method, params);
-          if (method === "Input.insertText") inserted = true;
-          if (inserted && method === "DOM.describeNode" && params.depth === -1 && ++treeReads === 1) {
-            fake.state.emojiAttributes = () => ({ class: "emoji", alt: "", src: "/static/blank.png" });
-          }
-          return result;
-        };
-      }
+      const send = fake.session.send.bind(fake.session);
+      let inserted = false;
+      let treeReads = 0;
+      fake.session.send = async (method, params = {}) => {
+        const result = await send(method, params);
+        if (method === "Input.insertText") inserted = true;
+        if (inserted && method === "DOM.describeNode" && params.depth === -1 && ++treeReads === 1) {
+          fake.state.emojiAttributes = () => ({ class: "unrecognized-inline", alt: "", src: "/static/blank.png" });
+        }
+        return result;
+      };
       c.sessions.push(fake);
       return fake.session;
     },
@@ -349,18 +297,16 @@ test("a composer text refusal before the send click says where and which check r
     assert.equal(code, 1);
     assert.equal(payload?.status, "failed");
     assert.equal(payload?.record, null);
-    assert.deepEqual(payload?.attempts, [
-      { attempt: 1, status: "refused", refusalCode: "text_mismatch", errorCode: null, completed: "draft", stage: "send_precheck", check: "unresolved_inline" },
-      { attempt: 2, status: "refused", refusalCode: "duplicate_post", errorCode: null, completed: "navigate", stage: null, check: null },
+    assert.deepEqual(payload?.attempts.map((a) => [a.status, a.refusalCode, a.completed, a.stage, a.check]), [
+      ["refused", "text_mismatch", "draft", "send_precheck", "unresolved_inline"],
     ]);
-    const first = c.sessions[0];
-    assert.ok(first);
-    assert.equal(first.clicks().length, 2, "destination and composer focus only; no send click");
-    assert.equal(first.currentMessages().length, 0);
-    assert.match(first.currentDraft(), /^QA² 新規ユーザー｜9\/20（UTC）\n👤 /);
+    const fake = c.sessions[0];
+    assert.ok(fake);
+    assert.equal(fake.clicks().length, 2, "destination and composer focus only; no send click");
+    assert.equal(fake.currentMessages().length, 0);
+    assert.match(fake.currentDraft(), /^QA² 新規ユーザー｜9\/20（UTC）\n👤 /);
     await assert.rejects(readFile(c.recordPath), { code: "ENOENT" });
-    const text = JSON.stringify(payload);
-    assert.doesNotMatch(text, /新規ユーザー|👤|人|#qa2|qa2|idempotency/);
+    assert.doesNotMatch(JSON.stringify(payload), /新規ユーザー|👤|人|#qa2|qa2|idempotency/);
   } finally {
     await c.cleanup();
   }
@@ -396,12 +342,12 @@ test("two concurrent runs with the real lock: exactly one posts", async () => {
   try {
     // One run posts; the other either skips on the lock or sees the winner's
     // record. The loser never connects and never queries.
-    const [first, second] = await Promise.all([runDailyJob(c.io), runDailyJob({ ...c.io, decide: decideByLabel(sendFlow(1)) })]);
+    const [first, second] = await Promise.all([runDailyJob(c.io), runDailyJob({ ...c.io, decide: decideByLabel(SEND_FLOW) })]);
     const statuses = [first.payload?.status, second.payload?.status];
     assert.equal(statuses.filter((s) => s === "posted").length, 1);
     assert.ok(statuses.every((s) => s === "posted" || s === "skipped-locked" || s === "already-posted"), statuses.join(","));
     assert.equal(c.sessions.length, 1);
-    assert.equal(c.executor.calls.length, 2); // the two read-only SELECTs of the winner only
+    assert.equal(c.executor.calls.length, 3); // game lookup, daily count, and cumulative count for the winner only
     const onDisk = JSON.parse(await readFile(c.recordPath, "utf8"));
     assert.equal(onDisk.status, "posted");
   } finally {

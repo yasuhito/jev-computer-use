@@ -3,12 +3,12 @@
  * exclusive run lock, both plain files inside one caller-owned state
  * directory (on a deployment, a systemd StateDirectory or similar).
  *
- * Idempotency contract: a record exists only after the Slack send was
- * verified. A duplicate marker is not sufficient because it may be present
- * in an unposted draft. A record is written atomically (temp file + rename in
- * the same directory) so a crash can leave either the old or the new state,
- * never a torn one. A corrupt or unreadable record is an error, never silently
- * ignored: fail closed rather than risk a second post for the same date.
+ * Single-attempt contract: atomically write an `attempted` record immediately
+ * before the send click. A later run must not resend that date, even when the
+ * click result is uncertain. Replace it with `posted` only after the workflow
+ * verifies the post. A duplicate marker is not success because it may be in
+ * an unposted draft. A corrupt or unreadable record is an error, never
+ * silently ignored: fail closed rather than risk a second post for that date.
  *
  * Lock contract: O_EXCL create of `<stateDir>/run.lock` holding the holder
  * pid, start instant, and the kernel boot id. A lock is stale - and may be
@@ -19,7 +19,7 @@
  */
 import { readFileSync } from "node:fs";
 import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /** How long a lock from the same boot with a live pid may stay before it may be broken. */
 export const LOCK_STALE_MS = 12 * 60 * 60 * 1000;
@@ -53,26 +53,34 @@ export function pidAlive(pid) {
   }
 }
 
+/** @typedef {{date: string, status: "attempted", attemptedAt: string, attempts: 1}} AttemptRecord */
 /** @typedef {{date: string, status: "posted", postedAt: string, attempts: number, recordedAt: string}} PostedRecord */
+/** @typedef {AttemptRecord|PostedRecord} DailyRecord */
 
 /**
  * @param {unknown} value
- * @returns {PostedRecord|null} the parsed record, or null when the file holds another shape
+ * @returns {DailyRecord|null} parsed state, or null for an unknown shape
  */
 function parseRecord(value) {
   if (typeof value !== "object" || value === null) return null;
   const r = /** @type {Record<string, unknown>} */ (value);
-  if (r.status !== "posted" || typeof r.date !== "string" || typeof r.postedAt !== "string") return null;
-  return {
-    date: r.date,
-    status: "posted",
-    postedAt: r.postedAt,
-    attempts: typeof r.attempts === "number" ? r.attempts : 0,
-    recordedAt: typeof r.recordedAt === "string" ? r.recordedAt : r.postedAt,
-  };
+  if (typeof r.date !== "string") return null;
+  if (r.status === "attempted" && typeof r.attemptedAt === "string" && r.attempts === 1) {
+    return { date: r.date, status: "attempted", attemptedAt: r.attemptedAt, attempts: 1 };
+  }
+  if (r.status === "posted" && typeof r.postedAt === "string") {
+    return {
+      date: r.date,
+      status: "posted",
+      postedAt: r.postedAt,
+      attempts: typeof r.attempts === "number" ? r.attempts : 0,
+      recordedAt: typeof r.recordedAt === "string" ? r.recordedAt : r.postedAt,
+    };
+  }
+  return null;
 }
 
-/** @typedef {{read: (date: string) => Promise<PostedRecord|null>, write: (record: PostedRecord) => Promise<void>}} RecordStore */
+/** @typedef {{read: (date: string) => Promise<DailyRecord|null>, write: (record: DailyRecord) => Promise<void>}} RecordStore */
 
 /**
  * File-backed RecordStore: `<dir>/records/<date>.json`, written atomically.
@@ -86,7 +94,7 @@ export class FileRecordStore {
 
   /**
    * @param {string} date
-   * @returns {Promise<PostedRecord|null>}
+   * @returns {Promise<DailyRecord|null>}
    */
   async read(date) {
     let text;
@@ -103,20 +111,32 @@ export class FileRecordStore {
       throw new Error(`state record for ${date} is not valid JSON; investigate before rerunning`);
     }
     const record = parseRecord(parsed);
-    if (!record) throw new Error(`state record for ${date} has an unknown shape; investigate before rerunning`);
+    if (!record || record.date !== date) throw new Error(`state record for ${date} has an unknown shape; investigate before rerunning`);
     return record;
   }
 
   /**
-   * @param {PostedRecord} record
+   * @param {DailyRecord} record
    * @returns {Promise<void>}
    */
   async write(record) {
     await mkdir(this.recordsDir, { recursive: true });
+    const parent = await open(dirname(this.recordsDir), "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
     const path = join(this.recordsDir, `${record.date}.json`);
     const temp = `${path}.${process.pid}.tmp`;
     await writeFileExclusive(temp, `${JSON.stringify(record, null, 2)}\n`);
     await rename(temp, path);
+    const directory = await open(dirname(path), "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
   }
 }
 
@@ -129,6 +149,7 @@ async function writeFileExclusive(path, text) {
   const handle = await open(path, "wx", 0o600);
   try {
     await handle.writeFile(text, "utf8");
+    await handle.sync();
   } finally {
     await handle.close();
   }

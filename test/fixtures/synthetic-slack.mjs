@@ -152,6 +152,7 @@ export const SYNTHETIC_EMOJI = Object.freeze([
   { unicode: "⚖️", shortcode: "scales", file: "2696-fe0f", label: "scales", localizedAlt: ":天秤:" },
   { unicode: "⚖", shortcode: "scales", file: "2696-fe0f", label: "scales", localizedAlt: ":天秤:" },
   { unicode: "📅", shortcode: "date", file: "1f4c5", label: "calendar", localizedAlt: ":日付:" },
+  { unicode: "📈", shortcode: "chart_with_upwards_trend", file: "1f4c8", label: "chart with upwards trend", localizedAlt: ":上昇チャート:" },
   { unicode: "👥", shortcode: "busts_in_silhouette", file: "1f465", label: "busts in silhouette", localizedAlt: ":上半身シルエット_2:" },
 ]);
 
@@ -366,7 +367,11 @@ export function buildElements(page, { path, draft, messages, splitMessages = fal
       });
       return;
     }
-    elements.push({ key: `message:${i}`, role: "statictext", name: text, text, href: null, value: null, disabled: false, attributes: {} });
+    // Keep a profile-declared message container even in the one-node shape.
+    // Accessibility text omits image-backed emoji as Chromium does, while the
+    // subtree description below still exposes their actual image elements.
+    elements.push({ key: `message:${i}`, role: "listitem", name: "", text: null, href: null, value: null, disabled: false, attributes: {} });
+    elements.push({ key: `message:${i}:p0`, role: "statictext", name: withoutEmoji(text), text: withoutEmoji(text), href: null, value: null, disabled: false, attributes: {} });
   });
   return { conversation, title, elements };
 }
