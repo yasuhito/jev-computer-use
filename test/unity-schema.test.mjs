@@ -2,14 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { accountGamesStatement, newUsersByStartDateStatement } from "../src/unity/data-access.mjs";
+import { accountGamesStatement, newUsersByStartDateStatement, cumulativeUsersStatement } from "../src/unity/data-access.mjs";
 
 /** @typedef {import("../src/snowflake/executor.mjs").Statement} Statement */
 /** @typedef {import("../src/snowflake/executor.mjs").Binding} Binding */
 
 /** @typedef {{name: string, type: string}} Column
  * @typedef {Record<string, Column[]>} Schema
- * @typedef {{schema: Schema, results: {account_games: {columns: Column[]}, new_users_by_start_date: {columns: Column[]}}}} Fixture
+ * @typedef {{schema: Schema, results: {account_games: {columns: Column[]}, new_users_by_start_date: {columns: Column[]}, cumulative_users: {columns: Column[]}}}} Fixture
  */
 
 /** @type {Fixture} */
@@ -209,7 +209,7 @@ function compile(statement, schema = SCHEMA) {
 
 /* ----------------------------- the real statements ----------------------------- */
 
-test("both generated statements compile against the official schema and answer the columns the fixture records", () => {
+test("all generated statements compile against the official schema and answer the columns the fixture records", () => {
   const games = compile(accountGamesStatement("QA2"));
   assert.equal(games.view, "ACCOUNT_GAMES");
   assert.deepEqual(games.outputColumns, FIXTURE.results.account_games.columns.map((c) => c.name));
@@ -217,6 +217,10 @@ test("both generated statements compile against the official schema and answer t
   const users = compile(newUsersByStartDateStatement({ gameId: 24601, environmentId: 31001, start: "2026-09-07", end: "2026-09-21" }));
   assert.equal(users.view, "ACCOUNT_USERS");
   assert.deepEqual(users.outputColumns, FIXTURE.results.new_users_by_start_date.columns.map((c) => c.name));
+
+  const cumulative = compile(cumulativeUsersStatement({ gameId: 24601, environmentId: 31001, end: "2026-09-21" }));
+  assert.equal(cumulative.view, "ACCOUNT_USERS");
+  assert.deepEqual(cumulative.outputColumns, FIXTURE.results.cumulative_users.columns.map((c) => c.name));
 });
 
 test("every binding fits the column or date literal it feeds", () => {

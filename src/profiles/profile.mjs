@@ -34,11 +34,14 @@
  */
 
 /**
- * One DOM element as the adapter hands it to a profile's inlineText.
+ * One DOM element as the adapter hands it to a profile's inline-element hooks.
  * @typedef {object} DomElementFacts
  * @property {string} nodeName upper-case element name, for example "IMG"
  * @property {Readonly<Record<string, string>>} attributes
  */
+
+/** @typedef {{status: "proven", text: string}|{status: "unknown"}|{status: "contradicted"}} InlineEmojiIdentity */
+/** @typedef {{kind: "text"|"emoji", text: string}} InlineTextToken */
 
 /** @typedef {"destination"|"composer"|"send"|"control"} CandidateKind */
 
@@ -78,7 +81,9 @@ export const ACTIONS = Object.freeze({
  * @property {boolean} trusted execution is only ever possible under a trusted profile
  * @property {ReadonlySet<string>} [attributeRoles] accessibility roles whose element attributes the adapter fetches (one DOM.describeNode per node) before recognition; absent means none
  * @property {ReadonlySet<string>} [textSequenceContainerRoles] accessibility roles that bound one multi-node text sequence
- * @property {(element: DomElementFacts) => string|null|undefined} [inlineText] proves the text an inline element stands for when the page renders text as a non-text element (an emoji image): a string is the proven text, null marks an element the profile recognizes but cannot prove, undefined leaves the element to the adapter's generic rules; absent means the adapter compares accessibility text only
+ * @property {(element: DomElementFacts) => string|null|undefined} [inlineText] proves the text an inline element stands for when the page renders text as a non-text element: a string is proven, null is recognized but unproven, undefined leaves the element to the adapter's generic rules; strict verification uses this hook
+ * @property {(element: DomElementFacts) => InlineEmojiIdentity|undefined} [inlineEmoji] classifies a recognized emoji element without treating arbitrary opaque elements as emoji; unknown identity may be accepted only at a strict positional pre-send boundary
+ * @property {(text: string) => InlineTextToken[]} [tokenizeInlineText] splits caller text into its exact text and profile-supported emoji tokens
  * @property {(target: ObservedTarget) => {ok: boolean, reason?: string}} checkTarget
  * @property {(node: ObservedNode, target: ObservedTarget) => Recognition|null} recognize
  * @property {(candidate: Candidate, action: ActionType, target: ObservedTarget) => {ok: boolean, reason?: string}} allowAction

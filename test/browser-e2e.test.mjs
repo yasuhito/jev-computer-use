@@ -31,12 +31,13 @@ const SKIP = !CHROME ? "set JEV_CU_E2E_CHROME to a Chromium binary to run" : typ
 const SELF_DM_NAME = "Yasuhito Takamiya (自分)";
 const SELF_DM_FLOW = [/^Yasuhito Takamiya \(自分\) \[self direct message\]$/, /^Yasuhito Takamiya \(自分\) へのメッセージ$/, /^メッセージを送信$/];
 const QA2_FLOW = [/^qa2 \[channel\]$/, /^qa2 へのメッセージ$/, /^メッセージを送信$/];
-/** The approved four-line QA² layout with synthetic numbers. */
+/** The approved five-line QA² layout with synthetic numbers. */
 const EMOJI_REPORT = [
   "QA² 新規ユーザー｜9/24（UTC）",
   "👤 1,234人（前日より +56人）",
   "⚖️ 直近7日平均 1,035.4人 より 198.6人多め（+19.2%）",
   "📅 直近7日（9/18→9/24）：1,300 → 1,220 → 1,185 → 1,160 → 1,205 → 1,178 → 1,234人",
+  "📈 累計 9,876人（9/24 時点）",
 ].join("\n");
 const MARKERS = ["QA² 新規ユーザー｜9/24（UTC）", "unity-new-users:24601:31001:2026-09-24"];
 
@@ -194,7 +195,7 @@ const send = (adapter, flow = SELF_DM_FLOW) =>
 test("real Chromium: accessibility text alone refuses the emoji report before the send click (the 2026-09-25 refusal)", { skip: SKIP }, async () => {
   const { session, cleanup } = await launch();
   try {
-    const profile = { ...SLACK_LOCAL_SYNTHETIC_PROFILE, name: "accessibility-only-test", inlineText: undefined };
+    const profile = { ...SLACK_LOCAL_SYNTHETIC_PROFILE, name: "accessibility-only-test", inlineText: undefined, inlineEmoji: undefined, tokenizeInlineText: undefined };
     const report = await send(adapterFor(session, profile));
     assert.equal(report.status, "refused");
     assert.equal(report.refusal?.code, "text_mismatch");
@@ -202,7 +203,7 @@ test("real Chromium: accessibility text alone refuses the emoji report before th
     // Chromium's own read-back: the text with every emoji image missing.
     assert.equal(
       String(report.refusal?.details.readBack).split("\n").filter((line) => line !== "").join("\n"),
-      EMOJI_REPORT.replace(/👤|⚖️|📅/g, ""),
+      EMOJI_REPORT.replace(/👤|⚖️|📅|📈/g, ""),
     );
     assert.deepEqual(await renderedMessages(session), []);
   } finally {
@@ -210,7 +211,7 @@ test("real Chromium: accessibility text alone refuses the emoji report before th
   }
 });
 
-test("real Chromium: the four-line emoji report posts to the exact qa2 channel", { skip: SKIP }, async () => {
+test("real Chromium: the five-line emoji report posts to the exact qa2 channel", { skip: SKIP }, async () => {
   const { session, cleanup } = await launch();
   try {
     const report = await runWorkflow({
@@ -226,7 +227,7 @@ test("real Chromium: the four-line emoji report posts to the exact qa2 channel",
     assert.equal(report.status, "executed", JSON.stringify(report.refusal));
     assert.match(report.destination.candidate?.url ?? "", /\/client\/T0SYNTH\/C0QA2$/);
     assert.equal((await renderedMessages(session)).length, 1);
-    assert.equal((await renderedMessages(session))[0]?.split("\n").length, 4);
+    assert.equal((await renderedMessages(session))[0]?.split("\n").length, 5);
     if (process.env.JEV_CU_E2E_QA2_SCREENSHOT) {
       const { data } = await session.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
       await writeFile(process.env.JEV_CU_E2E_QA2_SCREENSHOT, Buffer.from(data, "base64"));
@@ -236,7 +237,7 @@ test("real Chromium: the four-line emoji report posts to the exact qa2 channel",
   }
 });
 
-test("real Chromium: the emoji report posts once to the self-DM in the approved four-line layout and a rerun refuses", { skip: SKIP }, async () => {
+test("real Chromium: the emoji report posts once to the self-DM in the approved five-line layout and a rerun refuses", { skip: SKIP }, async () => {
   const { session, cleanup } = await launch();
   try {
     const adapter = adapterFor(session, SLACK_LOCAL_SYNTHETIC_PROFILE);
@@ -246,7 +247,7 @@ test("real Chromium: the emoji report posts once to the self-DM in the approved 
     const composer = /** @type {{inlineReplacements: number}|undefined} */ (
       report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act")
     );
-    assert.equal(composer?.inlineReplacements, 3);
+    assert.equal(composer?.inlineReplacements, 4);
     const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
     assert.equal(posted?.verified, true);
     assert.deepEqual(await renderedMessages(session), [
@@ -255,6 +256,7 @@ test("real Chromium: the emoji report posts once to the self-DM in the approved 
         "[:bust_in_silhouette:] 1,234人（前日より +56人）",
         "[:scales:] 直近7日平均 1,035.4人 より 198.6人多め（+19.2%）",
         "[:date:] 直近7日（9/18→9/24）：1,300 → 1,220 → 1,185 → 1,160 → 1,205 → 1,178 → 1,234人",
+        "[:chart_with_upwards_trend:] 累計 9,876人（9/24 時点）",
       ].join("\n"),
     ]);
     const { result: attributes } = await session.send("Runtime.evaluate", {
@@ -267,6 +269,7 @@ test("real Chromium: the emoji report posts once to the self-DM in the approved 
       [":bust_in_silhouette:", ":上半身シルエット_1:"],
       [":scales:", ":天秤:"],
       [":date:", ":日付:"],
+      [":chart_with_upwards_trend:", ":上昇チャート:"],
     ]);
     if (process.env.JEV_CU_E2E_SCREENSHOT) {
       const { data } = await session.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
@@ -305,7 +308,6 @@ test("real Chromium: the ja-JP composer's spoken emoji alt stays out of the read
   /** @type {Array<[string, string]>} */
   const spoofs = [
     ["a disagreeing data-stringify-text", `img.setAttribute("data-stringify-text", ":date:")`],
-    ["no data-stringify-text", `img.removeAttribute("data-stringify-text")`],
     ["an emoji character alt", `img.setAttribute("alt", "📅")`],
     ["a swapped typed pair", `img.setAttribute("data-id", ":date:"); img.setAttribute("data-stringify-text", ":date:")`],
   ];
@@ -334,6 +336,32 @@ test("real Chromium: the ja-JP composer's spoken emoji alt stays out of the read
       await cleanup();
     }
   }
+  // Missing the secondary serialization field leaves identity unknown, not
+  // contradictory. The recognized Slack image passes only at its exact
+  // composer position; the posted rendering must still prove its identity.
+  const partial = await launch();
+  try {
+    await partial.session.send("Page.enable", {});
+    await partial.session.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `new MutationObserver(function () {
+        document.querySelectorAll("#composer img[data-id=':scales:']:not([data-spoofed])").forEach(function (img) {
+          img.setAttribute("data-spoofed", "");
+          img.removeAttribute("data-stringify-text");
+        });
+      }).observe(document, { subtree: true, childList: true })`,
+    });
+    const report = await send(adapterFor(partial.session, SLACK_LOCAL_SYNTHETIC_PROFILE));
+    assert.equal(report.status, "executed", JSON.stringify(report.refusal));
+    const posted = /** @type {{verified: boolean, count: number, emojiIdentity: string, verification: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+    assert.equal(posted?.verified, true);
+    assert.equal(posted?.count, 1);
+    assert.equal(posted?.emojiIdentity, "proven");
+    assert.equal(posted?.verification, "verified");
+    assert.equal((await renderedMessages(partial.session)).length, 1);
+  } finally {
+    await partial.cleanup();
+  }
+
   // Unspoofed, the composer images carry the observed spoken alt, which
   // Chromium leaves out of the editable's accessibility value.
   const { session, cleanup } = await launch();
@@ -342,13 +370,13 @@ test("real Chromium: the ja-JP composer's spoken emoji alt stays out of the read
     await session.send("Page.addScriptToEvaluateOnNewDocument", {
       source: `new MutationObserver(function () {
         var alts = Array.from(document.querySelectorAll("#composer img")).map(function (img) { return img.getAttribute("alt"); });
-        if (alts.length === 3) document.documentElement.setAttribute("data-composer-alts", JSON.stringify(alts));
+        if (alts.length === 4) document.documentElement.setAttribute("data-composer-alts", JSON.stringify(alts));
       }).observe(document, { subtree: true, childList: true })`,
     });
     const report = await send(adapterFor(session, SLACK_LOCAL_SYNTHETIC_PROFILE));
     assert.equal(report.status, "executed", JSON.stringify(report.refusal));
     const { result } = await session.send("Runtime.evaluate", { returnByValue: true, expression: `document.documentElement.getAttribute("data-composer-alts")` });
-    assert.deepEqual(JSON.parse(String(result.value)), ["上半身シルエット_1 絵文字", "天秤 絵文字", "日付 絵文字"]);
+    assert.deepEqual(JSON.parse(String(result.value)), ["上半身シルエット_1 絵文字", "天秤 絵文字", "日付 絵文字", "上昇チャート 絵文字"]);
     assert.equal((await renderedMessages(session)).length, 1);
   } finally {
     await cleanup();

@@ -193,11 +193,13 @@ function atDestination(snapshot, destinationUrl) {
  * paragraph-aware equality as the insertText read-back (CdpAdapter
  * editorHolds, built on paragraphEqual): the page's accessibility tree may
  * read every paragraph boundary as a blank line, so only blank-line
- * differences are tolerated, every non-empty line must match exactly and in
- * order, and an inline element (an emoji image) counts only as the text the
- * profile proves it stands for. A refusal names where it happened (`stage`:
- * the check before the send decision or the one inside the send click's gate)
- * and which check refused (`check`, from EDITOR_CHECKS).
+ * differences are tolerated and every non-empty text token must match in
+ * order. Recognized inline emoji images may have unknown identity only when
+ * their positions match the caller's exact emoji tokens; unknown elements and
+ * known contradictions refuse. Post-send verification requires proven emoji
+ * identity. A refusal names where it happened (`stage`: the check before the
+ * send decision or the one inside the send click's gate) and which check
+ * refused (`check`, from EDITOR_CHECKS).
  *
  * @param {CdpAdapter} adapter
  * @param {Snapshot} snapshot
@@ -249,11 +251,12 @@ async function composerHolds(adapter, snapshot, composerBackendNodeId, text, sta
  * name of the chosen destination (see destinationNameMatches), so an
  * allowlisted name is never satisfied by a merely similar label;
  * `duplicateMarker` accepts one marker or a list and refuses to draft or send
- * when the destination's currently rendered accessibility tree contains any
- * of them. This is a best-effort preflight guard, not durable or atomic
+ * when any profile-declared message container carries one of them. Composer
+ * drafts are deliberately excluded, because a marker there is not a posted
+ * message. This is a best-effort preflight guard, not durable or atomic
  * idempotency.
  *
- * @param {{mode: Mode, destination: string|null, text?: string|null, adapter: CdpAdapter, decide: DecideFn|null, threshold?: number, maxCandidates: number, exactDestination?: boolean, duplicateMarker?: string|string[]|null}} input
+ * @param {{mode: Mode, destination: string|null, text?: string|null, adapter: CdpAdapter, decide: DecideFn|null, threshold?: number, maxCandidates: number, exactDestination?: boolean, duplicateMarker?: string|string[]|null, onBeforeSend?: (() => Promise<void>|void)|null}} input
  * @returns {Promise<WorkflowReport>}
  */
 export async function runWorkflow({
@@ -266,6 +269,7 @@ export async function runWorkflow({
   maxCandidates,
   exactDestination = false,
   duplicateMarker = null,
+  onBeforeSend = null,
 }) {
   const profile = adapter.profile;
   /** @type {WorkflowReport} */
@@ -444,7 +448,7 @@ export async function runWorkflow({
     const arrived = atDestination(atDest, destinationUrl);
     if (!arrived.ok) throw new RefusalError(arrived.code, arrived.reason);
     for (const marker of duplicateMarkers) {
-      const existing = await adapter.findText(marker, { match: "contains" });
+      const existing = await adapter.findText(marker, { match: "contains", scope: "messages" });
       report.steps.push({ step: "duplicate", phase: "verify", marker, found: existing.count });
       if (existing.count > 0) {
         throw new RefusalError("duplicate_post", `the destination already shows ${existing.count} item(s) carrying the marker`, {
@@ -493,11 +497,13 @@ export async function runWorkflow({
         if (!here.ok) return here;
         return composerHolds(adapter, fresh, composer.backendNodeId, text, "send_gate");
       },
+      beforeClick: onBeforeSend,
     });
     report.steps.push({ step: "send", phase: "act", ...sent });
     report.completed = "send";
 
     // ---- verify the post ----
+    const postCheck = /** @type {{value: {count: number, emojiIdentity?: string, verification?: string}|null}} */ ({ value: null });
     const posted = await adapter.waitFor(async (snapshot) => {
       if (!urlReached(snapshot.target.url, destinationUrl)) return false;
       const composerNow = snapshot.candidates.find((c) => c.backendNodeId === composer.backendNodeId);
@@ -505,23 +511,20 @@ export async function runWorkflow({
       // whose cleared composer keeps the exact single-U+000A blank editor
       // artifact counts as empty; every other nonempty value is a draft.
       if (!composerNow || !editorValueIsEmpty(composerNow.value)) return false;
-      // The post verification compares under the canonical paragraph-aware
-      // semantics (paragraphEqual/paragraphLines in CdpAdapter) within one
-      // profile-declared message container: the real client renders each
-      // paragraph of the posted message as its own accessibility node, so
-      // the text's non-empty lines must be one contiguous run in tree order.
-      // A missing, reordered, altered, or interleaved
-      // non-empty line never verifies; unnamed container nodes around the
-      // paragraphs never break the run. A message whose emoji render as
-      // images verifies only through the profile's proof of each image.
-      const found = await adapter.findText(text, { match: "sequence" });
-      return found.count > 0;
+      // Verify exact paragraph order in one profile-declared message
+      // container. Emoji images must have a matching identity at every
+      // expected position, then be followed by exposed text read-back.
+      postCheck.value = await adapter.findText(text, { match: "sequence" });
+      return postCheck.value.count > 0 && postCheck.value.verification === "verified";
     });
     report.steps.push({
       step: "posted",
       phase: "verify",
       verified: posted.ok,
       url: posted.snapshot.target.url,
+      count: postCheck.value?.count ?? 0,
+      emojiIdentity: postCheck.value?.emojiIdentity ?? "not_verified",
+      verification: postCheck.value?.verification ?? "not_found",
     });
     report.status = posted.ok ? "executed" : "unverified";
     return report;

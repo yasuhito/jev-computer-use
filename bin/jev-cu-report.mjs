@@ -29,13 +29,14 @@ import {
   DEFAULT_ENVIRONMENT_NAME,
   resolveGameEnvironment,
   fetchNewUsersByStartDate,
+  fetchCumulativeUsers,
 } from "../src/unity/data-access.mjs";
 import { completeUtcWindow, DEFAULT_WINDOW_DAYS } from "../src/report/dates.mjs";
 import { buildNewUsersReport } from "../src/report/new-users.mjs";
 import { renderSlackMessage, slackMessageDuplicateMarker, DEFAULT_SERIES_DAYS } from "../src/report/slack-message.mjs";
 
 const TOOL = "jev-cu-report";
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 export const REPORT_MODES = Object.freeze(["dry-run", "send"]);
 /** @typedef {"dry-run"|"send"} ReportMode */
@@ -219,7 +220,7 @@ const defaultConnect = connectDefaultPage;
  * Run the CLI. The SQL executor, decision dependency, CDP connection, and
  * clock are injectable so tests run offline. Returns the process exit code.
  *
- * @param {{argv?: string[], stdout?: WritableLike, stderr?: WritableLike, env?: NodeJS.ProcessEnv, executor?: import("../src/snowflake/executor.mjs").SqlExecutor|null, decide?: import("../src/decide.mjs").DecideFn|null, connect?: ConnectFn, now?: () => number, reportNow?: number, sleep?: (ms: number) => Promise<void>, settleMs?: number}} [io]
+ * @param {{argv?: string[], stdout?: WritableLike, stderr?: WritableLike, env?: NodeJS.ProcessEnv, executor?: import("../src/snowflake/executor.mjs").SqlExecutor|null, decide?: import("../src/decide.mjs").DecideFn|null, connect?: ConnectFn, now?: () => number, reportNow?: number, sleep?: (ms: number) => Promise<void>, settleMs?: number, beforeSend?: (() => Promise<void>|void)|null}} [io]
  * @returns {Promise<number>}
  */
 export async function runCli({
@@ -234,8 +235,9 @@ export async function runCli({
   reportNow = undefined,
   sleep = undefined,
   settleMs = undefined,
+  beforeSend = null,
 } = {}) {
-  const { code, payload } = await runReportJob({ argv, stdout, stderr, env, executor, decide, connect, now, reportNow, sleep, settleMs });
+  const { code, payload } = await runReportJob({ argv, stdout, stderr, env, executor, decide, connect, now, reportNow, sleep, settleMs, beforeSend });
   if (payload !== null) stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   return code;
 }
@@ -247,10 +249,12 @@ export async function runCli({
  * still written there; stdout is never touched, so a caller decides how the
  * payload is surfaced.
  *
- * @param {{argv?: string[], stdout?: WritableLike, stderr?: WritableLike, env?: NodeJS.ProcessEnv, executor?: import("../src/snowflake/executor.mjs").SqlExecutor|null, decide?: import("../src/decide.mjs").DecideFn|null, connect?: ConnectFn, now?: () => number, reportNow?: number, sleep?: (ms: number) => Promise<void>, settleMs?: number}} [io]
+ * @param {{argv?: string[], stdout?: WritableLike, stderr?: WritableLike, env?: NodeJS.ProcessEnv, executor?: import("../src/snowflake/executor.mjs").SqlExecutor|null, decide?: import("../src/decide.mjs").DecideFn|null, connect?: ConnectFn, now?: () => number, reportNow?: number, sleep?: (ms: number) => Promise<void>, settleMs?: number, beforeSend?: (() => Promise<void>|void)|null}} [io]
  * @returns {Promise<{code: number, payload: Record<string, unknown>|null}>}
  */
 export async function runReportJob({
+  beforeSend = null,
+
   argv = [],
   stderr = process.stderr,
   env = process.env,
@@ -301,11 +305,14 @@ export async function runReportJob({
     const clock = reportNow ?? now();
     const window = completeUtcWindow(clock, DEFAULT_WINDOW_DAYS);
     const game = await resolveGameEnvironment(source, { gameName, environmentName });
-    const rows = await fetchNewUsersByStartDate(source, { gameId: game.gameId, environmentId: game.environmentId, start: window.start, end: window.end });
-    const report = buildNewUsersReport({ game, window, rows, generatedAt: new Date(clock).toISOString() });
+    const [rows, cumulativeUsers] = await Promise.all([
+      fetchNewUsersByStartDate(source, { gameId: game.gameId, environmentId: game.environmentId, start: window.start, end: window.end }),
+      fetchCumulativeUsers(source, { gameId: game.gameId, environmentId: game.environmentId, end: window.end }),
+    ]);
+    const report = buildNewUsersReport({ game, window, rows, cumulativeUsers, generatedAt: new Date(clock).toISOString() });
     const message = validateMessageText(renderSlackMessage(report, { seriesDays: DEFAULT_SERIES_DAYS }));
-    // The first marker identifies the new four-line rendering. Keep the
-    // idempotency key too so a retry still recognizes posts made by older code.
+    // The first marker identifies the current five-line rendering. Keep the
+    // idempotency key too so a prior post with an older layout is recognized.
     const duplicateMarkers = [slackMessageDuplicateMarker(report), report.idempotencyKey];
 
     /** @type {Record<string, unknown>} */
@@ -348,6 +355,7 @@ export async function runReportJob({
       maxCandidates: options.maxCandidates,
       exactDestination: true,
       duplicateMarker: duplicateMarkers,
+      onBeforeSend: beforeSend,
     });
     payload = { ...base, status: send.status, send };
     return { code: 0, payload };

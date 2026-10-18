@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseDailyArgs, runDailyJob, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETRY_BASE_SEC, NON_RETRYABLE_CODES } from "../src/schedule/daily.mjs";
+import { parseDailyArgs, runDailyJob } from "../src/schedule/daily.mjs";
 
 /** @typedef {NonNullable<Parameters<typeof runDailyJob>[0]>} DailyIo */
 /** @typedef {NonNullable<import("../src/schedule/state.mjs").PostedRecord>} PostedRecord */
 /** @typedef {import("../src/schedule/daily.mjs").ReportResult} ReportResult */
-/** @typedef {Partial<ReportResult> & {throw?: Error}} ScriptedResult */
+/** @typedef {import("../src/schedule/state.mjs").DailyRecord} DailyRecord */
+/** @typedef {Parameters<NonNullable<DailyIo["runReport"]>>[0]} ReportIo */
+/** @typedef {Partial<ReportResult> & {throw?: Error, markAttempt?: boolean}} ScriptedResult */
 /** @typedef {Partial<DailyIo> & {results?: ScriptedResult[]}} BaseOverrides */
 
 /** 10:00 JST is 01:00 UTC; the last complete UTC day is 2026-09-20. */
@@ -14,31 +16,32 @@ const DATE = "2026-09-20";
 
 /**
  * A report runner that consumes scripted results in order; a scripted result
- * with `throw` makes the runner throw (an internal failure).
+ * with `markAttempt` crosses the send boundary before returning or throwing.
  *
  * @param {ScriptedResult[]} results
- * @returns {NonNullable<DailyIo["runReport"]> & {calls: DailyIo[]}}
+ * @returns {NonNullable<DailyIo["runReport"]> & {calls: ReportIo[]}}
  */
 function fakeRunReport(results) {
-  /** @type {DailyIo[]} */
+  /** @type {ReportIo[]} */
   const calls = [];
   /**
-   * @param {DailyIo} io
+   * @param {ReportIo} io
    * @returns {Promise<ReportResult>}
    */
   const fn = async (io) => {
     calls.push(io);
     const next = results.shift();
     if (next === undefined) throw new Error("unexpected extra report attempt");
+    if (next.markAttempt) await io.beforeSend?.();
     if (next.throw) throw next.throw;
     return /** @type {ReportResult} */ (next);
   };
   return Object.assign(fn, { calls });
 }
 
-/** @returns {import("../src/schedule/state.mjs").RecordStore & {records: Map<string, PostedRecord>}} */
+/** @returns {import("../src/schedule/state.mjs").RecordStore & {records: Map<string, DailyRecord>}} */
 function memoryStore() {
-  /** @type {Map<string, PostedRecord>} */
+  /** @type {Map<string, DailyRecord>} */
   const records = new Map();
   return {
     records,
@@ -47,7 +50,7 @@ function memoryStore() {
      */
     read: async (date) => records.get(date) ?? null,
     /**
-     * @param {PostedRecord} record
+     * @param {DailyRecord} record
      */
     write: async (record) => {
       records.set(record.date, record);
@@ -89,7 +92,7 @@ function baseIo(overrides = {}) {
   };
   const store = memoryStore();
   const lock = fakeLock();
-  const runReport = fakeRunReport(overrides.results ?? [{ code: 0, payload: { status: "executed" } }]);
+  const runReport = fakeRunReport(overrides.results ?? [verifiedSend()]);
   /** @type {DailyIo} */
   const io = {
     argv: ["--state-dir", "/state"],
@@ -105,6 +108,28 @@ function baseIo(overrides = {}) {
   return { io, clock, store, lock, runReport };
 }
 
+/** @returns {ScriptedResult} */
+function verifiedSend() {
+  return {
+    markAttempt: true,
+    code: 0,
+    payload: {
+      status: "executed",
+      send: {
+        status: "executed",
+        steps: [{ step: "posted", verified: true, verification: "verified", emojiIdentity: "proven" }],
+      },
+    },
+  };
+}
+
+const attemptedRecord = /** @type {import("../src/schedule/state.mjs").AttemptRecord} */ ({
+  date: DATE,
+  status: "attempted",
+  attemptedAt: new Date(NOW_MS).toISOString(),
+  attempts: 1,
+});
+
 const existingRecord = /** @type {PostedRecord} */ ({
   date: DATE,
   status: "posted",
@@ -116,8 +141,6 @@ const existingRecord = /** @type {PostedRecord} */ ({
 test("parseDailyArgs fixes unattended sends to qa2 regardless of environment", () => {
   const o = parseDailyArgs(["--state-dir", "/s"], { env: { JEV_CU_REPORT_DESTINATION: "qa3", JEV_CU_REPORT_ALLOW_DESTINATION: "qa3" } });
   assert.equal(o.mode, "send");
-  assert.equal(o.maxAttempts, DEFAULT_MAX_ATTEMPTS);
-  assert.equal(o.retryBaseSec, DEFAULT_RETRY_BASE_SEC);
   assert.equal(o.destination, "qa2");
   assert.deepEqual(o.allowDestinations, ["qa2"]);
   assert.equal(parseDailyArgs(["--state-dir", "/s", "--dry-run"]).mode, "dry-run");
@@ -125,10 +148,8 @@ test("parseDailyArgs fixes unattended sends to qa2 regardless of environment", (
 
 test("parseDailyArgs validates every flag and rejects destination overrides", () => {
   assert.throws(() => parseDailyArgs(["--state-dir", ""]), /state-dir/);
-  assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--max-attempts", "0"]), /1\.\.10/);
-  assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--max-attempts", "11"]), /1\.\.10/);
-  assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--retry-base-sec", "3601"]), /0\.\.3600/);
-  assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--retry-base-sec", "-1"]), /0\.\.3600/);
+  assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--max-attempts", "1"]), /unknown option/);
+  assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--retry-base-sec", "0"]), /unknown option/);
   assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--min-confidence", "1.5"]), /\[0, 1\]/);
   assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--max-candidates", "300"]), /1\.\.255/);
   assert.throws(() => parseDailyArgs(["--state-dir", "/s", "--date", "2026-09-20"]), /unknown option/);
@@ -192,92 +213,120 @@ test("a duplicate_post refusal is terminal and never recorded as success", async
   assert.equal(store.records.size, 0);
 });
 
-test("a failed attempt is retried with exponential backoff until a verified send", async () => {
-  const { io, clock } = baseIo({
-    results: [
-      { code: 1, payload: { status: "error", error: { code: "transport" } } },
-      { code: 0, payload: { status: "unverified" } },
-      { code: 0, payload: { status: "executed" } },
-    ],
-    argv: ["--state-dir", "/state", "--retry-base-sec", "10"],
-  });
+test("the attempted marker is written at the callback, before a verified result", async () => {
+  const { io, store } = baseIo();
+  io.runReport = async (input) => {
+    assert.equal(store.records.size, 0);
+    assert.equal(typeof input.beforeSend, "function");
+    await input.beforeSend?.();
+    assert.deepEqual(store.records.get(DATE), attemptedRecord);
+    return /** @type {ReportResult} */ (verifiedSend());
+  };
   const { code, payload } = await runDailyJob(io);
   assert.equal(code, 0);
   assert.equal(payload?.status, "posted");
-  assert.equal(payload?.record?.attempts, 3);
-  assert.deepEqual(
-    payload?.attempts.map((a) => [a.attempt, a.status, a.errorCode, a.refusalCode]),
-    [
-      [1, "error", "transport", null],
-      [2, "unverified", null, null],
-      [3, "executed", null, null],
-    ],
+  assert.equal(store.records.get(DATE)?.status, "posted");
+});
+
+test("pre-send failures leave no record and a later run may send once", async () => {
+  for (const first of [
+    { code: 1, payload: { status: "error", error: { code: "transport" } } },
+    { code: 0, payload: { status: "refused", send: { refusal: { code: "destination_mismatch" } } } },
+    { throw: new Error("boom") },
+  ]) {
+    const { io, store, runReport } = baseIo({ results: [first, verifiedSend()] });
+    const failed = await runDailyJob(io);
+    assert.equal(failed.code, 1);
+    assert.equal(failed.payload?.status, "failed");
+    assert.equal(failed.payload?.record, null);
+    assert.equal(failed.payload?.attempts.length, 1);
+    assert.equal(runReport.calls.length, 1);
+    assert.equal(store.records.size, 0);
+    const posted = await runDailyJob({ ...io, lock: fakeLock().lock });
+    assert.equal(posted.code, 0);
+    assert.equal(posted.payload?.status, "posted");
+    assert.equal(runReport.calls.length, 2);
+    assert.equal(posted.payload?.record?.attempts, 1);
+  }
+});
+
+test("post-click nonverified outcomes are uncertain and never resent", async () => {
+  /** @type {ScriptedResult[]} */
+  const outcomes = [
+    { code: 0, payload: { status: "unverified" } },
+    { code: 1, payload: { status: "error", error: { code: "transport" } } },
+    { code: 0, payload: { status: "refused", send: { refusal: { code: "duplicate_post" } } } },
+    { throw: new Error("post-click failure") },
+    { code: 0, payload: { status: "executed" } },
+    { ...verifiedSend(), code: 1 },
+  ];
+  // Every required verified-send field must be present and exact.
+  const posted = { step: "posted", verified: true, verification: "verified", emojiIdentity: "proven" };
+  for (const step of [
+    { ...posted, step: "send" },
+    { ...posted, verified: false },
+    { ...posted, verification: "not_found" },
+    { ...posted, emojiIdentity: "unproven" },
+  ]) {
+    outcomes.push({ code: 0, payload: { status: "executed", send: { status: "executed", steps: [step] } } });
+  }
+  outcomes.push(
+    { code: 0, payload: { status: "unverified", send: { status: "executed", steps: [posted] } } },
+    { code: 0, payload: { status: "executed", send: { status: "unverified", steps: [posted] } } },
+    { code: 0, payload: { status: "executed", send: { status: "executed", steps: [] } } },
   );
-  // Backoff 10s then 20s advanced the fake clock.
-  assert.equal(clock.t, NOW_MS + 30_000);
+  for (const outcome of outcomes) {
+    const { io, store, runReport } = baseIo({ results: [{ ...outcome, markAttempt: true }] });
+    const uncertain = await runDailyJob(io);
+    assert.equal(uncertain.code, 1);
+    assert.equal(uncertain.payload?.status, "uncertain");
+    assert.deepEqual(uncertain.payload?.record, attemptedRecord);
+    assert.deepEqual(store.records.get(DATE), attemptedRecord);
+    assert.equal(uncertain.payload?.attempts.length, 1);
+    const skipped = await runDailyJob({ ...io, lock: fakeLock().lock });
+    assert.equal(skipped.code, 1);
+    assert.equal(skipped.payload?.status, "already-attempted");
+    assert.deepEqual(skipped.payload?.record, attemptedRecord);
+    assert.deepEqual(skipped.payload?.attempts, []);
+    assert.equal(runReport.calls.length, 1);
+  }
 });
 
-test("retries keep the report clock on the run's original UTC date", async () => {
-  const start = Date.parse("2026-09-21T23:59:59Z");
-  /** @type {number[]} */
-  const seen = [];
-  const { io } = baseIo({
-    now: (() => {
-      let calls = 0;
-      return () => (calls++ === 0 ? start : start + 2000);
-    })(),
-    sleep: async () => {},
-    runReport: async (input) => {
-      seen.push(input.reportNow);
-      return seen.length === 1 ? { code: 1, payload: { status: "error", error: { code: "transport" } } } : { code: 0, payload: { status: "executed" } };
-    },
-    argv: ["--state-dir", "/state", "--retry-base-sec", "0"],
-  });
-  const { payload } = await runDailyJob(io);
-  assert.equal(payload?.targetDate, "2026-09-20");
-  assert.deepEqual(seen, [start, start]);
-});
-
-test("retries stop at the bound and the run fails with no record", async () => {
-  const { io, runReport } = baseIo({
-    results: [
-      { code: 0, payload: { status: "refused", send: { refusal: { code: "destination_mismatch" } } } },
-      { code: 0, payload: { status: "refused", send: { refusal: { code: "destination_mismatch" } } } },
-    ],
-    argv: ["--state-dir", "/state", "--max-attempts", "2"],
-  });
+test("even a verified result without the pre-send callback fails without a record", async () => {
+  const { io, store } = baseIo({ results: [{ ...verifiedSend(), markAttempt: false }] });
   const { code, payload } = await runDailyJob(io);
   assert.equal(code, 1);
   assert.equal(payload?.status, "failed");
   assert.equal(payload?.record, null);
-  assert.equal(runReport.calls.length, 2);
+  assert.equal(store.records.size, 0);
 });
 
-test("configuration-class failures are not retried", async () => {
-  assert.ok(NON_RETRYABLE_CODES.size >= 6);
-  for (const result of [
-    { code: 1, payload: { status: "error", error: { code: "missing_snowflake_config" } } },
-    { code: 1, payload: { status: "error", error: { code: "missing_key" } } },
-    { code: 2, payload: { status: "error", error: { code: "destination_not_allowed" } } },
-  ]) {
-    const { io, runReport } = baseIo({ results: [result] });
-    const { code, payload } = await runDailyJob(io);
-    assert.equal(code, 1);
-    assert.equal(payload?.status, "failed");
-    assert.equal(runReport.calls.length, 1, JSON.stringify(result));
-  }
+test("the report clock stays on the run's original UTC date at the click boundary", async () => {
+  const start = Date.parse("2026-09-21T23:59:59Z");
+  const { io, store } = baseIo({ now: (() => {
+    let calls = 0;
+    return () => (calls++ === 0 ? start : start + 2000);
+  })() });
+  io.runReport = async (input) => {
+    assert.equal(input.reportNow, start);
+    await input.beforeSend?.();
+    assert.deepEqual(store.records.get(DATE), { ...attemptedRecord, attemptedAt: new Date(start + 2000).toISOString() });
+    return /** @type {ReportResult} */ (verifiedSend());
+  };
+  const { code, payload } = await runDailyJob(io);
+  assert.equal(code, 0);
+  assert.equal(payload?.targetDate, DATE);
 });
 
-test("a thrown report runner is contained as an error attempt", async () => {
-  const { io, runReport } = baseIo({
-    results: [{ throw: new Error("boom") }, { throw: new Error("boom") }],
-    argv: ["--state-dir", "/state", "--max-attempts", "2"],
-  });
+test("a thrown pre-send runner is contained as one internal error", async () => {
+  const { io, runReport } = baseIo({ results: [{ throw: new Error("boom") }] });
   const { code, payload } = await runDailyJob(io);
   assert.equal(code, 1);
-  assert.equal(payload?.attempts.length, 2);
+  assert.equal(payload?.status, "failed");
+  assert.equal(payload?.record, null);
+  assert.equal(payload?.attempts.length, 1);
   assert.equal(payload?.attempts[0]?.errorCode, "internal");
-  assert.equal(runReport.calls.length, 2);
+  assert.equal(runReport.calls.length, 1);
 });
 
 test("dry-run runs the report without a record and without a destination requirement", async () => {
@@ -324,10 +373,14 @@ test("the lock is released on every path out", async () => {
     ["success", {}],
     ["failure", { results: [{ code: 1, payload: { status: "error", error: { code: "transport" } } }] }],
     ["already", { results: [] }],
+    ["uncertain", { results: [{ markAttempt: true, code: 0, payload: { status: "unverified" } }] }],
+    ["attempted", { results: [] }],
+    ["throw", { results: [{ throw: new Error("boom") }] }],
   ];
   for (const [label, over] of paths) {
     const { io, lock, store } = baseIo(over);
     if (label === "already") store.records.set(DATE, existingRecord);
+    if (label === "attempted") store.records.set(DATE, attemptedRecord);
     await runDailyJob(io);
     assert.equal(lock.calls.length, 1, label);
     assert.equal(lock.releases.length, 1, label);
@@ -336,13 +389,13 @@ test("the lock is released on every path out", async () => {
 
 test("the printed payload carries no report data, destination, message, or key", async () => {
   const leaky = {
-    status: "executed",
+    ...verifiedSend().payload,
     report: { reportDate: DATE, previousDay: { newUsers: 1234 }, idempotencyKey: "unity-new-users:24601:31001:2026-09-20" },
     message: "QA2 new users (Live) for 2026-09-20 (UTC)\nNew users on 2026-09-20: 1,234",
     destination: "qa2-metrics",
     delivery: { allowlist: ["qa2-metrics"] },
   };
-  const { io } = baseIo({ results: [{ code: 0, payload: leaky }] });
+  const { io } = baseIo({ results: [{ markAttempt: true, code: 0, payload: leaky }] });
   const { code, payload } = await runDailyJob(io);
   assert.equal(code, 0);
   const text = JSON.stringify(payload);
@@ -363,26 +416,26 @@ test("a refused attempt keeps only closed-set stage and check labels, never refu
       },
     },
   });
-  const { io } = baseIo({
-    argv: ["--state-dir", "/state", "--max-attempts", "3"],
-    results: [
-      refused({ stage: "send_precheck", check: "ax_dom_disagree", readBack: "QA² 新規ユーザー｜9/20（UTC）\n\n 1,234人", reason: "the composer no longer holds the caller text" }),
-      refused({ stage: "QA² 1,234人", check: "1,234人 qa2" }, "somewhere"),
-      refused({ readBack: "1,234人" }, "navigate"),
-    ],
-  });
-  const { code, payload } = await runDailyJob(io);
-  assert.equal(code, 1);
-  assert.deepEqual(
-    payload?.attempts.map((a) => [a.completed, a.stage, a.check]),
-    [
-      ["draft", "send_precheck", "ax_dom_disagree"],
-      [null, "other", "other"],
-      ["navigate", null, null],
-    ],
-  );
-  const text = JSON.stringify(payload);
-  assert.doesNotMatch(text, /1,234|新規ユーザー|qa2|reads back|holds/);
+  const results = [
+    refused({ stage: "send_precheck", check: "ax_dom_disagree", readBack: "QA² 新規ユーザー｜9/20（UTC）\n\n 1,234人", reason: "the composer no longer holds the caller text" }),
+    refused({ stage: "QA² 1,234人", check: "1,234人 qa2" }, "somewhere"),
+    refused({ readBack: "1,234人" }, "navigate"),
+  ];
+  const expected = [
+    ["draft", "send_precheck", "ax_dom_disagree"],
+    [null, "other", "other"],
+    ["navigate", null, null],
+  ];
+  for (const [index, result] of results.entries()) {
+    const { io, store } = baseIo({ results: [result] });
+    const { code, payload } = await runDailyJob(io);
+    assert.equal(code, 1);
+    assert.equal(payload?.status, "failed");
+    assert.equal(payload?.record, null);
+    assert.equal(store.records.size, 0);
+    assert.deepEqual(payload?.attempts.map((a) => [a.completed, a.stage, a.check]), [expected[index]]);
+    assert.doesNotMatch(JSON.stringify(payload), /1,234|新規ユーザー|qa2|reads back|holds/);
+  }
 });
 
 test("usage errors exit 2 with a JSON error payload", async () => {

@@ -37,6 +37,13 @@ export const NEW_USERS_BY_START_DATE_STATEMENT = [
   "ORDER BY START_DATE",
 ].join("\n");
 
+export const CUMULATIVE_USERS_STATEMENT = [
+  "SELECT COUNT(DISTINCT USER_ID) AS CUMULATIVE_USERS",
+  "FROM ACCOUNT_USERS",
+  "WHERE GAME_ID = ? AND ENVIRONMENT_ID = ?",
+  "  AND START_DATE < TO_DATE(?, 'YYYY-MM-DD')",
+].join("\n");
+
 export const DEFAULT_GAME_NAME = "QA2";
 /** Unity names QA2's environments "Live", "staging", and "develop"; only "Live" is reported. Exact, case-sensitive. */
 export const DEFAULT_ENVIRONMENT_NAME = "Live";
@@ -224,4 +231,41 @@ export async function fetchNewUsersByStartDate(executor, input) {
     byDate.set(date, count);
   });
   return [...byDate.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([date, newUsers]) => ({ date, newUsers }));
+}
+
+/**
+ * @param {{gameId: number, environmentId: number, end: string}} input end is the exclusive UTC cutoff
+ * @returns {Statement}
+ */
+export function cumulativeUsersStatement({ gameId, environmentId, end }) {
+  if (!Number.isInteger(gameId) || !Number.isInteger(environmentId)) throw new Error("gameId and environmentId must be integers");
+  if (!isIsoDate(end)) throw new Error("end must be YYYY-MM-DD");
+  return {
+    name: "cumulative_users",
+    text: CUMULATIVE_USERS_STATEMENT,
+    bindings: [
+      { type: "FIXED", value: String(gameId) },
+      { type: "FIXED", value: String(environmentId) },
+      { type: "TEXT", value: end },
+    ],
+  };
+}
+
+/**
+ * Count distinct measured user identifiers with a start date before the
+ * exclusive UTC cutoff. Null USER_ID and START_DATE values are excluded by
+ * Snowflake's COUNT/WHERE semantics.
+ *
+ * @param {SqlExecutor} executor
+ * @param {{gameId: number, environmentId: number, end: string}} input
+ * @returns {Promise<number>}
+ */
+export async function fetchCumulativeUsers(executor, input) {
+  const rows = decodeRows(await executor.execute(cumulativeUsersStatement(input)));
+  if (rows.length !== 1) {
+    throw new DataAccessError("invalid_row", `cumulative-users query returned ${rows.length} rows; expected exactly one`, { rows: rows.length });
+  }
+  const count = requireInteger(/** @type {Record<string, string|number|null>} */ (rows[0]), "CUMULATIVE_USERS", 0, "cumulative-users");
+  if (count < 0) throw new DataAccessError("invalid_row", "cumulative-users result has a negative count");
+  return count;
 }

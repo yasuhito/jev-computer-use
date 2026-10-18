@@ -25,8 +25,8 @@ EnvironmentFile=/etc/jev-cu-report.env
 # Operator: the checkout path of this repository and the durable state
 # directory (records and run lock live there; it must survive reboots).
 ExecStart=/usr/bin/node /opt/jev-computer-use/bin/jev-cu-daily.mjs --state-dir /var/lib/jev-cu-report
-# One run may hold the lock for several minutes (bounded retries with
-# backoff); give it room.
+# One single-attempt run may hold the lock for several minutes while queries,
+# model decisions, and verification complete; give it room.
 TimeoutStartSec=30min
 # The timer never overlaps itself (oneshot), and the daily run lock covers
 # manual runs racing the timer.

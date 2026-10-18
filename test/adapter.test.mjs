@@ -571,7 +571,7 @@ test("findText sequence still verifies the single-node paragraph representation"
   fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["p1\n\np2\n\np3"]);
   const found = await adapter.findText("p1\np2\np3", { match: "sequence" });
   assert.equal(found.count, 1);
-  assert.deepEqual(found.backendNodeIds, [fake.idFor("message:0")]);
+  assert.deepEqual(found.backendNodeIds, [fake.idFor("message:0:p0")]);
 });
 
 test("findText sequence reads each rendered line once and named leaf nodes contribute too", async () => {
@@ -592,7 +592,7 @@ test("findText sequence reads each rendered line once and named leaf nodes contr
   const plain = setup();
   plain.fake.state.extraElements.push({
     key: "labeled",
-    role: "treeitem",
+    role: "listitem",
     name: "only label",
     text: null,
     href: null,
@@ -607,15 +607,16 @@ test("findText sequence reads each rendered line once and named leaf nodes contr
 
 /* ----------------------------- emoji images ----------------------------- */
 
-/** The approved four-line QA² layout with synthetic numbers. */
+/** The approved five-line QA² layout with synthetic numbers. */
 const EMOJI_REPORT = [
   "QA² 新規ユーザー｜9/24（UTC）",
   "👤 1,234人（前日より +56人）",
   "⚖️ 直近7日平均 1,035.4人 より 198.6人多め（+19.2%）",
   "📅 直近7日（9/18→9/24）：1,300 → 1,220 → 1,185 → 1,160 → 1,205 → 1,178 → 1,234人",
+  "📈 累計 9,876人（9/24 時点）",
 ].join("\n");
 /** The same profile with only accessibility-text comparison: the code before the emoji fix. */
-const ACCESSIBILITY_ONLY_PROFILE = { ...SLACK_PROFILE, name: "accessibility-only-test", inlineText: undefined };
+const ACCESSIBILITY_ONLY_PROFILE = { ...SLACK_PROFILE, name: "accessibility-only-test", inlineText: undefined, inlineEmoji: undefined, tokenizeInlineText: undefined };
 
 /**
  * @param {ReturnType<typeof setup>} env
@@ -628,7 +629,7 @@ async function insertIntoGeneral({ adapter }, text) {
 }
 
 test("the 2026-09-25 reproduction: emoji images read back without their characters, so accessibility text alone refuses", async () => {
-  // Trigger: the client turns 👤 ⚖️ 📅 into images with empty alt text.
+  // Trigger: the client turns report emoji into images with empty alt text.
   // Symptom: Chromium never reads an image into an editable's value, so the
   // read-back is the text minus the emoji; everything else is identical.
   const env = setup({}, { profile: ACCESSIBILITY_ONLY_PROFILE });
@@ -636,7 +637,7 @@ test("the 2026-09-25 reproduction: emoji images read back without their characte
     assert.ok(err instanceof RefusalError);
     assert.equal(err.code, "text_mismatch");
     const readBack = String(err.details.readBack);
-    assert.equal(readBack, EMOJI_REPORT.replace(/👤|⚖️|📅/g, "").replace(/\n/g, "\n\n"));
+    assert.equal(readBack, EMOJI_REPORT.replace(/👤|⚖️|📅|📈/g, "").replace(/\n/g, "\n\n"));
     return true;
   });
   // Masking condition: a plain-text draft never exercised the gap.
@@ -644,16 +645,37 @@ test("the 2026-09-25 reproduction: emoji images read back without their characte
   assert.equal((await insertIntoGeneral(plain, "QA2 new users\n1234")).verified, true);
 });
 
-test("insertText verifies the four-line emoji report by proving each emoji image from its attributes", async () => {
+test("insertText verifies the five-line emoji report by proving each emoji image from its attributes", async () => {
   const env = setup();
   const report = await insertIntoGeneral(env, EMOJI_REPORT);
   assert.equal(report.verified, true);
-  assert.equal(report.inlineReplacements, 3);
+  assert.equal(report.inlineReplacements, 4);
   assert.equal(env.fake.currentDraft(), EMOJI_REPORT);
   assert.ok(env.fake.methodCalls("DOM.describeNode").some((call) => call.params.depth === -1));
   // A plain-text draft still verifies through the accessibility value alone.
   const plain = await insertIntoGeneral(setup(), "users today: 1234\nchange: +5%");
   assert.equal(plain.inlineReplacements, 0);
+});
+
+test("recognized emoji images with unknown identity are positional before send but never verify a post", async () => {
+  const draft = setup();
+  draft.fake.state.emojiAttributes = (emoji, where) => where === "composer"
+    ? { class: "emoji", "data-id": ":unlisted:", "data-stringify-text": ":unlisted:", alt: "" }
+    : emojiImageAttributes(emoji, where);
+  const inserted = await insertIntoGeneral(draft, EMOJI_REPORT);
+  assert.equal(inserted.verified, true);
+  assert.equal(inserted.emojiIdentity, "unproven");
+  assert.ok(inserted.emojiProofs?.every((proof) => proof.identity === "unproven"));
+
+  const posted = setup({ splitMessages: true });
+  posted.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT]);
+  posted.fake.state.emojiAttributes = (emoji, where) => where === "message"
+    ? { class: "c-emoji__img", "data-stringify-type": "emoji", "data-stringify-emoji": ":unlisted:", alt: "" }
+    : emojiImageAttributes(emoji, where);
+  const verified = await posted.adapter.findText(EMOJI_REPORT, { match: "sequence" });
+  assert.equal(verified.count, 0);
+  assert.equal(verified.emojiIdentity, "unproven");
+  assert.equal(verified.verification, "emoji_identity_unproven");
 });
 
 test("insertText proves the ja-JP composer shape (spoken alt) and refuses it without the typed shortcode pair", async () => {
@@ -664,11 +686,11 @@ test("insertText proves the ja-JP composer shape (spoken alt) and refuses it wit
   assert.equal(emojiImageAttributes(sample, "composer")["data-id"], ":scales:");
   const ja = await insertIntoGeneral(setup(), EMOJI_REPORT);
   assert.equal(ja.verified, true);
-  assert.equal(ja.inlineReplacements, 3);
+  assert.equal(ja.inlineReplacements, 4);
   // Contrast: the empty alt the fixture assumed before still verifies.
   const empty = setup();
   empty.fake.state.emojiAttributes = (e, w) => ({ ...emojiImageAttributes(e, w), ...(w === "composer" ? { alt: "" } : {}) });
-  assert.equal((await insertIntoGeneral(empty, EMOJI_REPORT)).inlineReplacements, 3);
+  assert.equal((await insertIntoGeneral(empty, EMOJI_REPORT)).inlineReplacements, 4);
   // A spoken alt never proves an emoji by itself, and the pair decides which emoji it is.
   const swapped = setup();
   swapped.fake.state.emojiAttributes = (e, w) => (w === "composer" && e.shortcode === "scales" ? { ...emojiImageAttributes(e, w), "data-id": ":date:", "data-stringify-text": ":date:" } : emojiImageAttributes(e, w));
@@ -680,9 +702,9 @@ test("insertText refuses missing, changed, moved, reordered, extra, and respelle
   const cases = [
     ["missing emoji", (d) => d.replace("👤", "")],
     ["another provable emoji", (d) => d.replace("👤", "📅")],
-    ["an emoji the profile cannot prove", (d) => d.replace("👤", "👥")],
+    ["a known different emoji", (d) => d.replace("👤", "📅")],
     ["moved within its line", (d) => d.replace("👤 1,234人", " 1,234人👤")],
-    ["reordered lines", (d) => { const l = d.split("\n"); return [l[0], l[2], l[1], l[3]].join("\n"); }],
+    ["reordered lines", (d) => { const l = d.split("\n"); return [l[0], l[2], l[1], l[3], l[4]].join("\n"); }],
     ["an extra emoji", (d) => `${d}📅`],
     ["a text change unrelated to emoji", (d) => d.replace("1,234人", "1,235人")],
     ["a respelled scales emoji without U+FE0F in the caller text", (d) => d, "⚖"],
@@ -708,18 +730,15 @@ test("an unexpected emoji image is refused even when the accessibility value alo
   await rejectsRefusal(insertIntoGeneral(unproven, "users today: 1234"), "text_mismatch");
 });
 
-test("insertText refuses emoji images whose identity is missing, conflicting, or not in the closed set", async () => {
+test("insertText refuses unresolved or contradicted emoji images", async () => {
   /** @type {Array<[string, (emoji: Parameters<typeof emojiImageAttributes>[0], where: "composer"|"message") => Record<string, string>]>} */
   const cases = [
     ["no identity attribute", () => ({ alt: "", src: "/static/blank.png" })],
     ["conflicting shortcode fields", (e, w) => ({ ...emojiImageAttributes(e, w), "data-id": ":date:" })],
-    ["a skin-tone shortcode", (e, w) => ({ ...emojiImageAttributes(e, w), "data-id": `:${e.shortcode}::skin-tone-2:` })],
-    ["a custom shortcode", (e, w) => ({ ...emojiImageAttributes(e, w), "data-stringify-text": ":qa2_logo:" })],
+    ["a skin-tone shortcode", () => ({ class: "custom-inline-image", alt: "", src: "/static/blank.png" })],
+    ["a custom shortcode", () => ({ class: "custom-inline-image", alt: "", src: "/static/blank.png" })],
     ["a different emoji character in alt", (e, w) => ({ ...emojiImageAttributes(e, w), alt: "👥" })],
-    ["a spoken alt without data-stringify-text", (e, w) => { const { "data-stringify-text": _t, ...a } = emojiImageAttributes(e, w); return a; }],
-    ["a spoken alt beside a disagreeing data-stringify-text", (e, w) => ({ ...emojiImageAttributes(e, w), "data-stringify-text": e.shortcode === "date" ? ":scales:" : ":date:" })],
-    ["an ASCII spoken alt", (e, w) => ({ ...emojiImageAttributes(e, w), alt: `${e.label} emoji` })],
-    ["only a localized label, title, and asset", (e, w) => { const { "data-id": _i, "data-stringify-text": _t, ...a } = emojiImageAttributes(e, w); return a; }],
+    ["a known disagreement with data-stringify-text", (e, w) => ({ ...emojiImageAttributes(e, w), "data-stringify-text": e.shortcode === "date" ? ":scales:" : ":date:" })],
   ];
   for (const [name, attributes] of cases) {
     const env = setup();
@@ -729,7 +748,7 @@ test("insertText refuses emoji images whose identity is missing, conflicting, or
     });
   }
   const env = setup();
-  env.fake.state.emojiAttributes = (e) => ({ alt: e.unicode, src: `/production-standard-emoji-assets/15.0/google-medium/${e.file}.png` });
+  env.fake.state.emojiAttributes = (e) => ({ class: "custom-inline-image", alt: e.unicode, src: `/production-standard-emoji-assets/15.0/google-medium/${e.file}.png` });
   await rejectsRefusal(insertIntoGeneral(env, "👤 1,234人"), "text_mismatch");
 });
 
@@ -738,13 +757,13 @@ test("editorHolds refuses when the accessibility value disagrees with the editab
   fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", "👤 1,234人");
   const snapshot = await adapter.observe();
   const composer = find(snapshot, /Message #general/);
-  assert.deepEqual(await adapter.editorHolds(composer.backendNodeId, " 1,234人", "👤 1,234人"), { ok: true, inlineReplacements: 1, reason: null, check: null });
+  assert.deepEqual(await adapter.editorHolds(composer.backendNodeId, " 1,234人", "👤 1,234人"), { ok: true, inlineReplacements: 1, reason: null, check: null, emojiIdentity: "proven", emojiProofs: [{ line: 1, offset: 0, identity: "proven" }] });
   const hidden = await adapter.editorHolds(composer.backendNodeId, " 1,234人 extra", "👤 1,234人");
   assert.equal(hidden.ok, false);
   assert.match(String(hidden.reason), /disagrees/);
   assert.equal(hidden.check, "ax_dom_disagree");
   const changed = await adapter.editorHolds(composer.backendNodeId, " 1,234人", "📅 1,234人");
-  assert.equal(changed.check, "inline_text_differs");
+  assert.equal(changed.check, "emoji_identity_contradicted");
   const gone = await adapter.editorHolds(987654, " 1,234人", "👤 1,234人");
   assert.equal(gone.ok, false);
   assert.equal(gone.check, "not_describable");
@@ -781,6 +800,29 @@ test("findText sequence verifies a posted emoji message only through proven emoj
   const before = setup({ splitMessages: true }, { profile: ACCESSIBILITY_ONLY_PROFILE });
   before.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT]);
   assert.equal((await before.adapter.findText(EMOJI_REPORT, { match: "sequence" })).count, 0);
+});
+
+test("findText still checks emoji identity when accessibility exposes the full emoji text", async () => {
+  const { fake, adapter } = setup({ splitMessages: true });
+  fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT]);
+  fake.state.emojiAttributes = (_emoji, where) => where === "message"
+    ? { class: "c-emoji__img", "data-stringify-type": "emoji", "data-stringify-emoji": ":unlisted:", alt: ":unlisted:" }
+    : emojiImageAttributes(_emoji, where);
+  const send = fake.session.send.bind(fake.session);
+  fake.session.send = async (method, params = {}) => {
+    const result = await send(method, params);
+    if (method === "Accessibility.getFullAXTree") {
+      const container = result.nodes.find((/** @type {Record<string, any>} */ node) => node.role?.value === "listitem");
+      const firstChildId = container?.childIds?.[0];
+      const firstChild = result.nodes.find((/** @type {Record<string, any>} */ node) => node.nodeId === firstChildId);
+      if (firstChild?.role?.value === "StaticText" && firstChild.name) firstChild.name.value = EMOJI_REPORT;
+    }
+    return result;
+  };
+  const found = await adapter.findText(EMOJI_REPORT, { match: "sequence" });
+  assert.equal(found.count, 0);
+  assert.equal(found.emojiIdentity, "unproven");
+  assert.equal(found.verification, "emoji_identity_unproven");
 });
 
 test("findText sequence does not verify a posted emoji message that differs, is split, is unprovable, or is not exposed", async () => {

@@ -76,6 +76,7 @@ export const SLACK_EMOJI = Object.freeze(
     ["bust_in_silhouette", "👤"],
     ["scales", "⚖️"],
     ["date", "📅"],
+    ["chart_with_upwards_trend", "📈"],
   ]),
 );
 
@@ -85,6 +86,7 @@ const EMOJI_IDENTITY_ATTRIBUTES = ["data-id", "data-stringify-text", "data-strin
 /** A localized emoji name: colon-wrapped letters, digits, and shortcode punctuation. */
 const LOCALIZED_EMOJI_NAME = /^:[\p{L}\p{N}_+'-]+:$/u;
 const NON_ASCII = /\P{ASCII}/u;
+const EMOJI_ALT = /\p{Extended_Pictographic}/u;
 /** A spoken localized emoji label: space-separated words of letters, digits, and shortcode punctuation. */
 const LOCALIZED_EMOJI_LABEL = /^[\p{L}\p{N}_+'-]+(?: [\p{L}\p{N}_+'-]+)*$/u;
 
@@ -108,55 +110,99 @@ function hasLocalizedAlt(nodeName, attributes) {
   return posted || composer;
 }
 
+/** @typedef {{status: "proven", text: string}|{status: "unknown"}|{status: "contradicted"}} SlackEmojiIdentity */
+
 /**
- * The Unicode text a Slack emoji element stands for, proven from its
- * attributes. An element is an emoji element when it is an `<img>` or
- * carries `data-stringify-type="emoji"` or `data-stringify-emoji`; every
- * other element is left to the adapter (undefined). Its nonempty `data-id`,
- * `data-stringify-text`, `data-stringify-emoji`, and `alt` identity fields
- * must be exact, agreeing shortcodes in SLACK_EMOJI; at least one is required.
- * An unknown, custom, combined, or disagreeing shortcode is unproven (null).
- * A localized `alt` is excluded from identity fields in two shapes. A
- * non-English client (observed on ja-JP) names a posted emoji image in its
- * own language (`:天秤:`) beside the stable `data-stringify-emoji` shortcode.
- * Such an `alt` is not an identity field, so it is skipped only when the
- * element also carries `data-stringify-type="emoji"` and a
- * `data-stringify-emoji` shortcode in
- * SLACK_EMOJI (which the other fields must still agree with), and the `alt`
- * is one colon-wrapped name of letters, digits, and shortcode punctuation
- * with at least one non-ASCII character, so it can never be a competing
- * Slack shortcode. The composer of the same client gives its emoji image a
- * spoken label instead (`天秤 絵文字`, observed 2026-09-25) beside the
- * stable `data-id` and `data-stringify-text` shortcodes; such an `alt` is
- * skipped only on an `<img>` whose `data-id` is a shortcode in SLACK_EMOJI
- * and whose `data-stringify-text` is exactly the same shortcode, and only
- * when the `alt` is space-separated words of letters, digits, and shortcode
- * punctuation with at least one non-ASCII character (never an emoji
- * character or a shortcode). An ASCII `alt` stays an identity field.
- * The result is the SLACK_EMOJI spelling, so a caller text with a different
- * spelling (for example `⚖` without U+FE0F) does not match.
+ * Only Slack's two observed emoji image classes make an image a recognized
+ * emoji. An arbitrary IMG, SVG, or other inline element remains opaque and
+ * cannot be used as a positional emoji placeholder.
+ * @param {string} nodeName
+ * @param {Readonly<Record<string, string>>} attributes
+ */
+function isSlackEmojiElement(nodeName, attributes) {
+  if (nodeName !== "IMG") return false;
+  const classes = (attributes.class ?? "").split(/\s+/);
+  return classes.includes("emoji") || classes.includes("c-emoji__img");
+}
+
+/**
+ * Classify a recognized Slack emoji image. Known canonical identity fields
+ * that disagree are contradicted; missing or unsupported identity fields are
+ * unknown. Unknown is safe only to the pre-send structural gate, never to
+ * post-send verification.
+ *
+ * The two locale-specific alt forms are ignored only alongside their stable
+ * Slack serialization fields. All other values stay evidence and may make
+ * the identity unknown or contradicted.
  *
  * @param {import("./profile.mjs").DomElementFacts} element
- * @returns {string|null|undefined}
+ * @returns {SlackEmojiIdentity|undefined}
  */
-export function slackEmojiText({ nodeName, attributes }) {
-  const isEmojiElement =
-    nodeName === "IMG" || attributes["data-stringify-type"] === "emoji" || attributes["data-stringify-emoji"] !== undefined;
-  if (!isEmojiElement) return undefined;
+export function slackEmojiIdentity({ nodeName, attributes }) {
+  if (!isSlackEmojiElement(nodeName, attributes)) return undefined;
   /** @type {string[]} */
-  const proofs = [];
+  const known = [];
+  let unknown = false;
   const skipAlt = hasLocalizedAlt(nodeName, attributes);
   for (const name of EMOJI_IDENTITY_ATTRIBUTES) {
     const value = attributes[name];
     if (value === undefined || value === "" || (name === "alt" && skipAlt)) continue;
+    if (name === "alt" && EMOJI_ALT.test(value)) {
+      const unicode = [...SLACK_EMOJI.values()].find((emoji) => emoji === value);
+      if (unicode === undefined) return { status: "contradicted" };
+      known.push(unicode);
+      continue;
+    }
     const shortcode = SLACK_SHORTCODE.exec(value)?.[1];
-    const unicode = shortcode === undefined ? undefined : SLACK_EMOJI.get(shortcode);
-    if (unicode === undefined) return null;
-    proofs.push(unicode);
+    const unicode = shortcode === undefined ? (name === "alt" ? [...SLACK_EMOJI.values()].find((emoji) => emoji === value) : undefined) : SLACK_EMOJI.get(shortcode);
+    if (unicode === undefined) unknown = true;
+    else known.push(unicode);
   }
-  const first = proofs[0];
-  if (first === undefined || proofs.some((unicode) => unicode !== first)) return null;
-  return first;
+  if (new Set(known).size > 1) return { status: "contradicted" };
+  if (unknown || known.length === 0) return { status: "unknown" };
+  return { status: "proven", text: known[0] ?? "" };
+}
+
+/**
+ * The strict inline resolver used by post-send verification. It proves text
+ * only when every relevant identity field is known and agrees; unknown and
+ * contradicted identities remain unresolved.
+ * @param {import("./profile.mjs").DomElementFacts} element
+ * @returns {string|null|undefined}
+ */
+export function slackEmojiText(element) {
+  const identity = slackEmojiIdentity(element);
+  if (identity === undefined) return undefined;
+  return identity.status === "proven" ? identity.text : null;
+}
+
+/** @typedef {{kind: "text"|"emoji", text: string}} SlackTextToken */
+
+/**
+ * Split one expected report line into exact text and the report's known emoji
+ * tokens. Longer Unicode spellings win (for example `⚖️` before `⚖`).
+ * @param {string} text
+ * @returns {SlackTextToken[]}
+ */
+export function tokenizeSlackText(text) {
+  const emojis = [...SLACK_EMOJI.values()].sort((a, b) => b.length - a.length);
+  /** @type {SlackTextToken[]} */
+  const tokens = [];
+  let plain = "";
+  for (let i = 0; i < text.length; ) {
+    const emoji = emojis.find((value) => text.startsWith(value, i));
+    if (emoji === undefined) {
+      plain += text[i];
+      i += 1;
+      continue;
+    }
+    if (plain !== "") tokens.push({ kind: "text", text: plain });
+    plain = "";
+    tokens.push({ kind: "emoji", text: emoji });
+    i += emoji.length;
+  }
+  if (plain !== "") tokens.push({ kind: "text", text: plain });
+  return tokens;
 }
 
 /** Roles whose element attributes the profile needs before it can recognize a node. */
@@ -268,6 +314,8 @@ export function createSlackProfile({ name, description, allowedOrigin }) {
     attributeRoles: ATTRIBUTE_ROLES,
     textSequenceContainerRoles: TEXT_SEQUENCE_CONTAINER_ROLES,
     inlineText: slackEmojiText,
+    inlineEmoji: slackEmojiIdentity,
+    tokenizeInlineText: tokenizeSlackText,
     checkTarget(target) {
       const parsed = parseUrl(target.url);
       if (!parsed || !allowedOrigin(parsed.origin)) {

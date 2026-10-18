@@ -5,10 +5,13 @@ import { completeUtcWindow, addDays, datesBetween, isIsoDate, utcDateOf, MIN_WIN
 import {
   resolveGameEnvironment,
   fetchNewUsersByStartDate,
+  fetchCumulativeUsers,
   accountGamesStatement,
   newUsersByStartDateStatement,
+  cumulativeUsersStatement,
   ACCOUNT_GAMES_STATEMENT,
   NEW_USERS_BY_START_DATE_STATEMENT,
+  CUMULATIVE_USERS_STATEMENT,
   DataAccessError,
 } from "../src/unity/data-access.mjs";
 import { buildNewUsersReport, compare, classifyTrend, round, idempotencyKey, FLAT_BAND_PERCENT } from "../src/report/new-users.mjs";
@@ -23,10 +26,12 @@ const GAME = { accountName: "Synthetic Studio", gameName: "QA2", gameId: 24601, 
 /**
  * @param {Array<[string, number]>} points
  * @param {number} [days]
+ * @param {number} [now]
+ * @param {number} [cumulativeUsers]
  */
-function reportFrom(points, days = 8, now = NOW) {
+function reportFrom(points, days = 8, now = NOW, cumulativeUsers = 9876) {
   const window = completeUtcWindow(now, days);
-  return buildNewUsersReport({ game: GAME, window, rows: points.map(([date, newUsers]) => ({ date, newUsers })), generatedAt: new Date(now).toISOString() });
+  return buildNewUsersReport({ game: GAME, window, rows: points.map(([date, newUsers]) => ({ date, newUsers })), cumulativeUsers, generatedAt: new Date(now).toISOString() });
 }
 
 /* ----------------------------- dates ----------------------------- */
@@ -51,17 +56,27 @@ test("the report window holds only complete UTC days and always excludes today",
 test("statements are read-only, bound positionally, and resolve the game by name rather than a hard-coded id", () => {
   assert.equal(assertReadOnlyStatement(ACCOUNT_GAMES_STATEMENT), ACCOUNT_GAMES_STATEMENT);
   assert.equal(assertReadOnlyStatement(NEW_USERS_BY_START_DATE_STATEMENT), NEW_USERS_BY_START_DATE_STATEMENT);
+  assert.equal(assertReadOnlyStatement(CUMULATIVE_USERS_STATEMENT), CUMULATIVE_USERS_STATEMENT);
   assert.match(ACCOUNT_GAMES_STATEMENT, /FROM ACCOUNT_GAMES/);
   assert.match(ACCOUNT_GAMES_STATEMENT, /WHERE GAME_NAME = \?/);
   assert.match(NEW_USERS_BY_START_DATE_STATEMENT, /COUNT\(DISTINCT USER_ID\) AS NEW_USERS/);
   assert.match(NEW_USERS_BY_START_DATE_STATEMENT, /START_DATE AS PLAYER_START_DATE/);
   assert.match(NEW_USERS_BY_START_DATE_STATEMENT, /GROUP BY START_DATE/);
+  assert.match(CUMULATIVE_USERS_STATEMENT, /COUNT\(DISTINCT USER_ID\) AS CUMULATIVE_USERS/);
+  assert.match(CUMULATIVE_USERS_STATEMENT, /GAME_ID = \? AND ENVIRONMENT_ID = \?/);
+  assert.match(CUMULATIVE_USERS_STATEMENT, /START_DATE < TO_DATE\(\?, 'YYYY-MM-DD'\)/);
   assert.doesNotMatch(NEW_USERS_BY_START_DATE_STATEMENT, /\d{4}-\d{2}-\d{2}|24601/);
+  assert.doesNotMatch(CUMULATIVE_USERS_STATEMENT, /\d{4}-\d{2}-\d{2}|24601/);
   assert.deepEqual(accountGamesStatement("QA2").bindings, [{ type: "TEXT", value: "QA2" }]);
   assert.deepEqual(newUsersByStartDateStatement({ gameId: 24601, environmentId: 31001, start: "2026-09-07", end: "2026-09-21" }).bindings, [
     { type: "FIXED", value: "24601" },
     { type: "FIXED", value: "31001" },
     { type: "TEXT", value: "2026-09-07" },
+    { type: "TEXT", value: "2026-09-21" },
+  ]);
+  assert.deepEqual(cumulativeUsersStatement({ gameId: 24601, environmentId: 31001, end: "2026-09-21" }).bindings, [
+    { type: "FIXED", value: "24601" },
+    { type: "FIXED", value: "31001" },
     { type: "TEXT", value: "2026-09-21" },
   ]);
   assert.throws(() => newUsersByStartDateStatement({ gameId: 1.5, environmentId: 1, start: "2026-09-07", end: "2026-09-21" }));
@@ -149,6 +164,53 @@ test("fetchNewUsersByStartDate validates and sorts rows and rejects data outside
 
 /* ----------------------------- report arithmetic ----------------------------- */
 
+test("cumulative user access binds the exclusive UTC cutoff and counts distinct synthetic IDs", async () => {
+  const syntheticUsers = [
+    { gameId: 7, environmentId: 2, userId: "alpha", startDate: "2026-09-19" },
+    { gameId: 7, environmentId: 2, userId: "alpha", startDate: "2026-09-19" },
+    { gameId: 7, environmentId: 2, userId: "beta", startDate: "2026-09-20" },
+    { gameId: 7, environmentId: 2, userId: null, startDate: "2026-09-20" },
+    { gameId: 7, environmentId: 2, userId: "no-date", startDate: null },
+    { gameId: 7, environmentId: 2, userId: "current-day", startDate: "2026-09-21" },
+    { gameId: 7, environmentId: 2, userId: "future-day", startDate: "2026-09-22" },
+    { gameId: 8, environmentId: 2, userId: "other-game", startDate: "2026-09-19" },
+    { gameId: 7, environmentId: 3, userId: "other-environment", startDate: "2026-09-19" },
+  ];
+  /** @type {import("../src/snowflake/executor.mjs").Statement[]} */
+  const observed = [];
+  const executor = {
+    kind: "fixture",
+    /** @param {import("../src/snowflake/executor.mjs").Statement} statement */
+    async execute(statement) {
+      observed.push(statement);
+      assertReadOnlyStatement(statement.text);
+      const [gameId, environmentId, cutoff] = statement.bindings;
+      const cutoffDate = typeof cutoff?.value === "string" ? cutoff.value : "";
+      const users = new Set(syntheticUsers
+        .filter((row) => row.gameId === Number(gameId?.value) && row.environmentId === Number(environmentId?.value))
+        .filter((row) => row.userId !== null && row.startDate !== null && row.startDate < cutoffDate)
+        .map((row) => row.userId));
+      return { columns: [{ name: "CUMULATIVE_USERS", type: "FIXED" }], rows: [[String(users.size)]] };
+    },
+  };
+  const count = await fetchCumulativeUsers(executor, { gameId: 7, environmentId: 2, end: "2026-09-21" });
+  assert.equal(count, 2, "duplicates count once, nulls are excluded, and current/future dates are outside the cutoff");
+  assert.deepEqual(observed[0]?.bindings.map((binding) => binding.value), ["7", "2", "2026-09-21"]);
+  assert.throws(() => cumulativeUsersStatement({ gameId: 7, environmentId: 2, end: "2026-02-30" }), /YYYY-MM-DD/);
+  const nullCountExecutor = createFixtureExecutor({
+    results: { cumulative_users: { columns: [{ name: "CUMULATIVE_USERS", type: "FIXED" }], rows: [[null]] } },
+  });
+  await assert.rejects(fetchCumulativeUsers(nullCountExecutor, { gameId: 7, environmentId: 2, end: "2026-09-21" }), (/** @type {DataAccessError} */ err) => err.code === "invalid_row");
+  const multipleCountExecutor = createFixtureExecutor({
+    results: { cumulative_users: { columns: [{ name: "CUMULATIVE_USERS", type: "FIXED" }], rows: [["1"], ["2"]] } },
+  });
+  await assert.rejects(fetchCumulativeUsers(multipleCountExecutor, { gameId: 7, environmentId: 2, end: "2026-09-21" }), /expected exactly one/);
+  const negativeCountExecutor = createFixtureExecutor({
+    results: { cumulative_users: { columns: [{ name: "CUMULATIVE_USERS", type: "FIXED" }], rows: [["-1"]] } },
+  });
+  await assert.rejects(fetchCumulativeUsers(negativeCountExecutor, { gameId: 7, environmentId: 2, end: "2026-09-21" }), /negative count/);
+});
+
 test("the report zero-fills missing days and defines every comparison once", () => {
   const report = reportFrom([
     ["2026-09-13", 100],
@@ -197,12 +259,12 @@ test("the report builder rejects rows outside its window and inconsistent window
   assert.throws(() => reportFrom([["2026-09-21", 1]]), /outside the window/);
   assert.throws(() => reportFrom([["2026-09-20", 1], ["2026-09-20", 2]]), /duplicate row/);
   const window = completeUtcWindow(NOW, 8);
-  assert.throws(() => buildNewUsersReport({ game: GAME, window: { ...window, reportDate: "2026-09-19" }, rows: [], generatedAt: "x" }), /day before the window end/);
+  assert.throws(() => buildNewUsersReport({ game: GAME, window: { ...window, reportDate: "2026-09-19" }, rows: [], cumulativeUsers: 0, generatedAt: "x" }), /day before the window end/);
 });
 
 /* ----------------------------- message ----------------------------- */
 
-test("the Slack message matches the approved four-line QA² example exactly", () => {
+test("the Slack message matches the approved five-line QA² example exactly", () => {
   const report = reportFrom(
     [
       ["2026-09-17", 1],
@@ -225,6 +287,7 @@ test("the Slack message matches the approved four-line QA² example exactly", ()
       "👤 1人（前日より +1人）",
       "⚖️ 直近7日平均 2人 より 1人少なめ（-50%）",
       "📅 直近7日（9/18→9/24）：2 → 4 → 3 → 3 → 1 → 0 → 1人",
+      "📈 累計 9,876人（9/24 時点）",
     ].join("\n"),
   );
   assert.equal(renderSlackMessage(report), message);
@@ -234,7 +297,7 @@ test("the Slack message matches the approved four-line QA² example exactly", ()
   assert.doesNotMatch(message, /<@|<#|https?:\/\/|unity-new-users|Snowflake|no rows/i);
 });
 
-test("the four Slack lines carry the QA² title and the three emoji prefixes with no raw bold markers", () => {
+test("the five Slack lines carry all report emojis and no raw bold markers", () => {
   const now = Date.parse("2026-09-25T09:00:00Z");
   /** @type {Array<[string, number]>} */
   const series = [
@@ -250,11 +313,12 @@ test("the four Slack lines carry the QA² title and the three emoji prefixes wit
   for (const last of [1234, 1035, 1100, 0]) {
     const points = /** @type {Array<[string, number]>} */ ([...series.slice(0, -1), ["2026-09-24", last]]);
     const lines = renderSlackMessage(reportFrom(points, 8, now)).split("\n");
-    assert.equal(lines.length, 4);
+    assert.equal(lines.length, 5);
     assert.equal(lines[0], "QA² 新規ユーザー｜9/24（UTC）");
     assert.ok(lines[1]?.startsWith("👤 "));
     assert.ok(lines[2]?.startsWith("⚖️ 直近7日平均 "));
     assert.ok(lines[3]?.startsWith("📅 直近7日（9/18→9/24）："));
+    assert.ok(lines[4]?.startsWith("📈 累計 9,876人（9/24 時点）"));
     for (const line of lines) {
       // Slack posts inserted text literally, so no mrkdwn marker may reach it.
       assert.doesNotMatch(line, /[*_~`]/);
