@@ -1150,7 +1150,9 @@ export class CdpAdapter {
    * interleaved non-empty line. Nodes that contribute no line never break a
    * run, so the unnamed containers around the paragraphs are unrelated, not
    * content. Accessibility matches return the distinct nodes carrying the
-   * matched lines; typed inline verification returns the matching containers.
+   * matched lines; typed inline verification returns the first verified
+   * container, and an opaque element (such as an avatar) fails only the
+   * windows that contain it, never its whole container.
    * For expected emoji, a profile with typed inline hooks validates the DOM
    * sequence even when accessibility text matches, so post verification
    * requires proven identities at exact positions. `scope: "messages"`
