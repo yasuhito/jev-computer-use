@@ -99,6 +99,8 @@ export function createFakeCdp({
     emojiAttributes: emojiImageAttributes,
     /** @type {((text: string) => string)|null} simulates a posted message whose DOM text differs from what the accessibility tree exposes */
     transformMessageDom: null,
+    /** Render a sender avatar (a non-emoji image) inside each posted message row, as the real client does. */
+    messageAvatar: false,
   };
 
   /** @type {Array<{method: string, params: Record<string, unknown>}>} */
@@ -233,14 +235,16 @@ export function createFakeCdp({
       domElement("p", {}, line === "" ? [domElement("br")] : domInline(line, "composer"), index === 0 ? firstId : nextDomId++),
     );
   /** @param {string} text a posted message as a rich-text section with `<br>` line breaks */
-  const messageDom = (text) =>
+  const messageDom = (text) => [
+    ...(state.messageAvatar ? [domElement("div", { class: "c-message_kit__gutter" }, [domElement("img", { class: "c-base_icon", src: "/static/avatar.png", alt: "" })])] : []),
     domElement("div", { class: "c-message_kit__blocks" }, [
       domElement(
         "div",
         { class: "p-rich_text_section" },
         text.split("\n").flatMap((line, index) => [...(index > 0 ? [domElement("br")] : []), ...domInline(line, "message")]),
       ),
-    ]);
+    ]),
+  ];
 
   /**
    * @param {Element & {id: number, index: number}} e
@@ -340,7 +344,7 @@ export function createFakeCdp({
           e.key === "composer"
             ? composerDom(currentDraft(), e.id + TEXT_CHILD_OFFSET)
             : message !== undefined
-              ? [messageDom(state.transformMessageDom ? state.transformMessageDom(message) : message)]
+              ? messageDom(state.transformMessageDom ? state.transformMessageDom(message) : message)
               : hasTextChild(e)
                 ? [{ nodeId: 0, backendNodeId: e.id + TEXT_CHILD_OFFSET, nodeType: 3, nodeName: "#text", localName: "", nodeValue: e.text ?? "" }]
                 : [];

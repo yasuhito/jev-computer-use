@@ -1334,8 +1334,6 @@ export class CdpAdapter {
       .filter((raw) => containerRoles.has(typeof raw.role?.value === "string" ? raw.role.value.toLowerCase() : ""))
       .slice(-MAX_ATTRIBUTE_LOOKUPS);
     const hasEmoji = expected.some((line) => tokenize(line).some((token) => token.kind === "emoji"));
-    /** @type {number[]} */
-    const found = [];
     /** @type {InlineComparison["emojiIdentity"]} */
     let outcome = hasEmoji ? "not_verified" : "not_applicable";
     let verification = "not_found";
@@ -1344,11 +1342,6 @@ export class CdpAdapter {
       if (described === null) continue;
       const dom = domInlineContent(described, classify);
       const actualLines = dom.lines.filter((line) => line.some((token) => token.kind !== "text" || token.text !== ""));
-      if (dom.unresolved > 0) {
-        if (hasEmoji && outcome !== "contradicted") outcome = "unproven";
-        verification = "unresolved_inline";
-        continue;
-      }
       for (let start = 0; start + expected.length <= actualLines.length; start += 1) {
         const comparison = compareInlineLines(actualLines.slice(start, start + expected.length), expected, tokenize, false);
         if (comparison.emojiIdentity === "contradicted") outcome = "contradicted";
@@ -1366,13 +1359,10 @@ export class CdpAdapter {
           verification = "text_not_exposed";
           continue;
         }
-        found.push(raw.backendDOMNodeId);
-        outcome = comparison.emojiIdentity;
-        verification = "verified";
-        break;
+        return { backendNodeIds: [raw.backendDOMNodeId], emojiIdentity: comparison.emojiIdentity, verification: "verified" };
       }
     }
-    return { backendNodeIds: found, emojiIdentity: outcome, verification };
+    return { backendNodeIds: [], emojiIdentity: outcome, verification };
   }
 
   /**

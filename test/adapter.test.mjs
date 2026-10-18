@@ -802,6 +802,40 @@ test("findText sequence verifies a posted emoji message only through proven emoj
   assert.equal((await before.adapter.findText(EMOJI_REPORT, { match: "sequence" })).count, 0);
 });
 
+test("findText sequence verifies a posted emoji message in a row that also holds a sender avatar", async () => {
+  const { fake, adapter } = setup({ splitMessages: true });
+  fake.state.messageAvatar = true;
+  fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["earlier post", EMOJI_REPORT]);
+  const found = await adapter.findText(EMOJI_REPORT, { match: "sequence" });
+  assert.deepEqual(found.backendNodeIds, [fake.idFor("message:1")]);
+  assert.equal(found.emojiIdentity, "proven");
+  assert.equal(found.verification, "verified");
+  // An opaque image inside the expected run still fails that run.
+  const inside = setup({ splitMessages: true });
+  inside.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT]);
+  inside.fake.state.emojiAttributes = (emoji, where) => where === "message" && emoji.shortcode === "scales"
+    ? { alt: "", src: "/static/photo.png" }
+    : emojiImageAttributes(emoji, where);
+  assert.equal((await inside.adapter.findText(EMOJI_REPORT, { match: "sequence" })).count, 0);
+});
+
+test("findText sequence keeps a verified post when a later message does not match", async () => {
+  /** @type {Array<[string, string]>} */
+  const later = [
+    ["another emoji", EMOJI_REPORT.replace("📅", "👤")],
+    ["an unprovable emoji", EMOJI_REPORT.replace("👤", "👥")],
+  ];
+  for (const [name, message] of later) {
+    const { fake, adapter } = setup({ splitMessages: true });
+    fake.state.messageAvatar = true;
+    fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT, message]);
+    const found = await adapter.findText(EMOJI_REPORT, { match: "sequence" });
+    assert.deepEqual(found.backendNodeIds, [fake.idFor("message:0")], name);
+    assert.equal(found.emojiIdentity, "proven", name);
+    assert.equal(found.verification, "verified", name);
+  }
+});
+
 test("findText still checks emoji identity when accessibility exposes the full emoji text", async () => {
   const { fake, adapter } = setup({ splitMessages: true });
   fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT]);

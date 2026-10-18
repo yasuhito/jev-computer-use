@@ -742,9 +742,9 @@ and `check` is one of `not_empty`, `not_observable`, `not_describable`,
 `inline_text_differs`, or `emoji_identity_contradicted`. Absent labels are null;
 unrecognized labels become `other`, never page text. Post verification reports
 `emojiIdentity` (`proven`, `unproven`, `contradicted`, `not_applicable`, or
-`not_verified`) and `verification` (`verified`, `unresolved_inline`,
-`emoji_identity_unproven`, `emoji_identity_contradicted`, `text_mismatch`,
-`text_not_exposed`, or `not_found`) when present.
+`not_verified`) and `verification` (`verified`, `emoji_identity_unproven`,
+`emoji_identity_contradicted`, `text_mismatch`, `text_not_exposed`, or
+`not_found`) when present.
 
 Exit codes: `0` for posted, already-posted, skipped-locked, and dry-run; `1`
 for already-attempted, uncertain, or failed; `2` for usage errors. `--help`

@@ -196,7 +196,7 @@ const COMPLETED_STAGES = Object.freeze(new Set(["navigate", "draft", "send"]));
  */
 export const TEXT_CHECK_STAGES = Object.freeze(new Set(["draft_precheck", "draft_readback", "send_precheck", "send_gate"]));
 const EMOJI_IDENTITIES = Object.freeze(new Set(["proven", "unproven", "contradicted", "not_applicable", "not_verified"]));
-const POST_VERIFICATIONS = Object.freeze(new Set(["verified", "unresolved_inline", "emoji_identity_unproven", "emoji_identity_contradicted", "text_mismatch", "text_not_exposed", "not_found"]));
+const POST_VERIFICATIONS = Object.freeze(new Set(["verified", "emoji_identity_unproven", "emoji_identity_contradicted", "text_mismatch", "text_not_exposed", "not_found"]));
 
 /** @typedef {{code: number, payload: Record<string, unknown>|null}} ReportResult */
 /** @typedef {(input: {endpoint: string, targetId: string|null, profile: import("../profiles/profile.mjs").Profile}) => Promise<import("../cdp/adapter.mjs").CdpSession>} ConnectFn */
