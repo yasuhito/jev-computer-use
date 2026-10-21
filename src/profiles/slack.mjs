@@ -17,10 +17,10 @@
  *   by `data-qa="texty_send_button"`; action: click, and only when the
  *   button is enabled.
  *
- * Slack renders a standard Unicode emoji, in the composer and in a posted
- * message, as an image whose accessibility text is empty or descriptive, so
- * the profile's inlineText proves which emoji such an image stands for from
- * its attributes (see slackEmojiText); only the closed SLACK_EMOJI set is
+ * Slack renders a standard Unicode emoji in a posted message as an image
+ * whose accessibility text is empty or descriptive, so the profile's
+ * inlineText proves which emoji the posted image represents from its
+ * attributes (see slackEmojiText); only the closed SLACK_EMOJI set is
  * provable.
  *
  * Reactions, uploads, downloads, deletion, external links, sign-in or
@@ -87,49 +87,37 @@ const EMOJI_IDENTITY_ATTRIBUTES = ["data-id", "data-stringify-text", "data-strin
 const LOCALIZED_EMOJI_NAME = /^:[\p{L}\p{N}_+'-]+:$/u;
 const NON_ASCII = /\P{ASCII}/u;
 const EMOJI_ALT = /\p{Extended_Pictographic}/u;
-/** A spoken localized emoji label: space-separated words of letters, digits, and shortcode punctuation. */
-const LOCALIZED_EMOJI_LABEL = /^[\p{L}\p{N}_+'-]+(?: [\p{L}\p{N}_+'-]+)*$/u;
-
 /**
  * Whether an emoji element's `alt` is a localized name to skip rather than
  * an identity field (see slackEmojiText).
  *
- * @param {string} nodeName
  * @param {Readonly<Record<string, string>>} attributes
  */
-function hasLocalizedAlt(nodeName, attributes) {
+function hasLocalizedAlt(attributes) {
   const alt = attributes.alt;
   if (alt === undefined || !NON_ASCII.test(alt)) return false;
-  const known = (/** @type {string|undefined} */ value) => SLACK_EMOJI.has(SLACK_SHORTCODE.exec(value ?? "")?.[1] ?? "");
-  const posted = attributes["data-stringify-type"] === "emoji" && known(attributes["data-stringify-emoji"]) && LOCALIZED_EMOJI_NAME.test(alt);
-  const composer =
-    nodeName === "IMG" &&
-    known(attributes["data-id"]) &&
-    attributes["data-stringify-text"] === attributes["data-id"] &&
-    LOCALIZED_EMOJI_LABEL.test(alt);
-  return posted || composer;
+  const shortcode = SLACK_SHORTCODE.exec(attributes["data-stringify-emoji"] ?? "")?.[1];
+  return attributes["data-stringify-type"] === "emoji" && shortcode !== undefined && SLACK_EMOJI.has(shortcode) && LOCALIZED_EMOJI_NAME.test(alt);
 }
 
 /** @typedef {{status: "proven", text: string}|{status: "unknown"}|{status: "contradicted"}} SlackEmojiIdentity */
 
 /**
- * Only Slack's two observed emoji image classes make an image a recognized
- * emoji. An arbitrary IMG, SVG, or other inline element remains opaque and
- * cannot be used as a positional emoji placeholder.
+ * Only Slack's observed posted-message emoji image class makes an image a
+ * recognized emoji. An arbitrary IMG, SVG, or other inline element remains
+ * opaque and cannot be used as a positional emoji placeholder.
  * @param {string} nodeName
  * @param {Readonly<Record<string, string>>} attributes
  */
 function isSlackEmojiElement(nodeName, attributes) {
   if (nodeName !== "IMG") return false;
-  const classes = (attributes.class ?? "").split(/\s+/);
-  return classes.includes("emoji") || classes.includes("c-emoji__img");
+  return (attributes.class ?? "").split(/\s+/).includes("c-emoji__img");
 }
 
 /**
  * Classify a recognized Slack emoji image. Known canonical identity fields
  * that disagree are contradicted; missing or unsupported identity fields are
- * unknown. Unknown is safe only to the pre-send structural gate, never to
- * post-send verification.
+ * unknown. Unknown or contradictory identity never verifies a posted message.
  *
  * The two locale-specific alt forms are ignored only alongside their stable
  * Slack serialization fields. All other values stay evidence and may make
@@ -143,7 +131,7 @@ export function slackEmojiIdentity({ nodeName, attributes }) {
   /** @type {string[]} */
   const known = [];
   let unknown = false;
-  const skipAlt = hasLocalizedAlt(nodeName, attributes);
+  const skipAlt = hasLocalizedAlt(attributes);
   for (const name of EMOJI_IDENTITY_ATTRIBUTES) {
     const value = attributes[name];
     if (value === undefined || value === "" || (name === "alt" && skipAlt)) continue;

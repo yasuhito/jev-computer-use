@@ -152,7 +152,7 @@ test("runCli reports a refused workflow with exit 0 and never sends input", asyn
   c.fake.state.drafts.set("/client/T0SYNTH/C0QA2METRICS", "stale draft");
   assert.equal(await runCli(c.io), 0);
   assert.equal(c.json().status, "refused");
-  assert.equal(c.json().refusal.code, "text_mismatch");
+  assert.equal(c.json().refusal.code, "composer_not_empty");
   assert.equal(c.fake.methodCalls("Input.insertText").length, 0);
   assert.deepEqual(c.fake.currentMessages(), []);
 });

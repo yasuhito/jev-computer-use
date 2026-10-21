@@ -6,8 +6,10 @@
  * Single-attempt contract: atomically write an `attempted` record immediately
  * before the send click. A later run must not resend that date, even when the
  * click result is uncertain. Replace it with `posted` only after the workflow
- * verifies the post. A duplicate marker is not success because it may be in
- * an unposted draft. A corrupt or unreadable record is an error, never
+ * verifies the post, or `posted_unverified` after visible marker evidence
+ * accompanies a post that fails verification. Either terminal record blocks
+ * another attempt. A duplicate marker is not success because it may be in an
+ * unposted draft. A corrupt or unreadable record is an error, never
  * silently ignored: fail closed rather than risk a second post for that date.
  *
  * Lock contract: O_EXCL create of `<stateDir>/run.lock` holding the holder
@@ -55,7 +57,12 @@ export function pidAlive(pid) {
 
 /** @typedef {{date: string, status: "attempted", attemptedAt: string, attempts: 1}} AttemptRecord */
 /** @typedef {{date: string, status: "posted", postedAt: string, attempts: number, recordedAt: string}} PostedRecord */
-/** @typedef {AttemptRecord|PostedRecord} DailyRecord */
+/** @typedef {{date: string, status: "posted_unverified", attemptedAt: string, attempts: 1, recordedAt: string, diagnostic: {emojiIdentity: string, verification: string}}} PostedUnverifiedRecord */
+/** @typedef {AttemptRecord|PostedRecord|PostedUnverifiedRecord} DailyRecord */
+
+export const SAFE_EMOJI_IDENTITIES = Object.freeze(new Set(["proven", "unproven", "contradicted", "not_applicable", "not_verified", "other"]));
+export const POST_MISMATCH_VERIFICATIONS = Object.freeze(new Set(["emoji_identity_unproven", "emoji_identity_contradicted", "text_mismatch", "text_not_exposed"]));
+export const SAFE_POST_VERIFICATIONS = Object.freeze(new Set(["verified", ...POST_MISMATCH_VERIFICATIONS, "not_found", "other"]));
 
 /**
  * @param {unknown} value
@@ -65,6 +72,9 @@ function parseRecord(value) {
   if (typeof value !== "object" || value === null) return null;
   const r = /** @type {Record<string, unknown>} */ (value);
   if (typeof r.date !== "string") return null;
+  const diagnostic = typeof r.diagnostic === "object" && r.diagnostic !== null
+    ? /** @type {Record<string, unknown>} */ (r.diagnostic)
+    : null;
   if (r.status === "attempted" && typeof r.attemptedAt === "string" && r.attempts === 1) {
     return { date: r.date, status: "attempted", attemptedAt: r.attemptedAt, attempts: 1 };
   }
@@ -75,6 +85,26 @@ function parseRecord(value) {
       postedAt: r.postedAt,
       attempts: typeof r.attempts === "number" ? r.attempts : 0,
       recordedAt: typeof r.recordedAt === "string" ? r.recordedAt : r.postedAt,
+    };
+  }
+  if (
+    r.status === "posted_unverified" &&
+    typeof r.attemptedAt === "string" &&
+    r.attempts === 1 &&
+    typeof r.recordedAt === "string" &&
+    diagnostic !== null &&
+    typeof diagnostic.emojiIdentity === "string" &&
+    SAFE_EMOJI_IDENTITIES.has(diagnostic.emojiIdentity) &&
+    typeof diagnostic.verification === "string" &&
+    POST_MISMATCH_VERIFICATIONS.has(diagnostic.verification)
+  ) {
+    return {
+      date: r.date,
+      status: "posted_unverified",
+      attemptedAt: r.attemptedAt,
+      attempts: 1,
+      recordedAt: r.recordedAt,
+      diagnostic: { emojiIdentity: diagnostic.emojiIdentity, verification: diagnostic.verification },
     };
   }
   return null;

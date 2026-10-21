@@ -297,46 +297,36 @@ test("click refuses when the hit test resolves to another element (overlay) or t
 
 /* ----------------------------- insertText ----------------------------- */
 
-test("insertText focuses with one click, inserts the exact text, and verifies the read-back", async () => {
+test("insertText focuses once and inserts exact caller text without reading it back", async () => {
   const { fake, adapter } = setup();
   const snapshot = await adapter.observe();
   const composer = find(snapshot, /Message #general/);
   const report = await adapter.insertText(snapshot, composer.id, "users today: 1234\nchange: +5%");
-  assert.equal(report.action, "insertText");
-  assert.equal(report.verified, true);
-  // The synthetic page models the real editor: each paragraph boundary reads
-  // back as a blank line, while the stored draft stays the exact text.
-  assert.equal(report.readBack, "users today: 1234\n\nchange: +5%");
+  assert.deepEqual(report, {
+    action: "insertText",
+    candidateId: composer.id,
+    backendNodeId: composer.backendNodeId,
+    point: { x: 170, y: 235 },
+    textLength: "users today: 1234\nchange: +5%".length,
+  });
   assert.equal(fake.currentDraft(), "users today: 1234\nchange: +5%");
   assert.equal(fake.clicks().length, 1);
   assert.deepEqual(fake.methodCalls("Input.insertText").map((c) => c.params.text), ["users today: 1234\nchange: +5%"]);
   assert.equal(fake.methodCalls("Input.dispatchKeyEvent").length, 0);
+  assert.equal(fake.methodCalls("DOM.describeNode").some((c) => c.params.depth === -1), false);
   const after = await adapter.observe();
   assert.equal(find(after, /Send now/).disabled, false);
 });
 
-test("insertText refuses a composer that already holds text and a read-back that differs", async () => {
-  {
-    const { fake, adapter } = setup();
-    fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", "old draft");
-    const snapshot = await adapter.observe();
-    const composer = find(snapshot, /Message #general/);
-    await rejectsRefusal(adapter.insertText(snapshot, composer.id, "new"), "text_mismatch");
-    assert.equal(fake.methodCalls("Input.insertText").length, 0);
-    assert.equal(fake.currentDraft(), "old draft");
-  }
-  {
-    const { fake, adapter } = setup();
-    fake.state.transformDraft = (draft) => draft.toUpperCase();
-    const snapshot = await adapter.observe();
-    const composer = find(snapshot, /Message #general/);
-    await assert.rejects(adapter.insertText(snapshot, composer.id, "exact"), (/** @type {unknown} */ err) => {
-      assert.ok(err instanceof RefusalError);
-      assert.equal(err.code, "text_mismatch");
-      assert.equal(err.details.readBack, "EXACT");
-      return true;
-    });
-  }
+test("insertText refuses to append when the composer already holds a draft", async () => {
+  const { fake, adapter } = setup();
+  fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", "old draft");
+  const snapshot = await adapter.observe();
+  const composer = find(snapshot, /Message #general/);
+  await rejectsRefusal(adapter.insertText(snapshot, composer.id, "new"), "composer_not_empty");
+  assert.equal(fake.methodCalls("Input.insertText").length, 0);
+  assert.equal(fake.methodCalls("Input.dispatchMouseEvent").length, 0);
+  assert.equal(fake.currentDraft(), "old draft");
 });
 
 test("insertText accepts the exact blank-editor newline artifact", async () => {
@@ -349,19 +339,18 @@ test("insertText accepts the exact blank-editor newline artifact", async () => {
   const composer = find(snapshot, /Message #general/);
   assert.equal(find(snapshot, /Send now/).disabled, true, "the blank draft leaves send disabled");
   const report = await adapter.insertText(snapshot, composer.id, "users today: 1234\nchange: +5%");
-  assert.equal(report.verified, true);
-  assert.equal(report.readBack, "users today: 1234\n\nchange: +5%");
+  assert.equal(report.textLength, "users today: 1234\nchange: +5%".length);
   assert.equal(fake.currentDraft(), "users today: 1234\nchange: +5%");
   assert.deepEqual(fake.methodCalls("Input.insertText").map((c) => c.params.text), ["users today: 1234\nchange: +5%"]);
 });
 
-test("insertText refuses whitespace other than the exact blank-editor newline", async () => {
-  for (const draft of ["\t", " ", "\r", "\r\n", "\n\n", "\u00A0", "\u3000", " \n\t ", "\u00A0\n"]) {
+test("insertText refuses every non-empty composer value except the exact blank newline artifact", async () => {
+  for (const draft of ["\t", " ", "\r", "\r\n", "\n\n", "\u00A0", "\u3000", " \n\t ", "\u00A0\n", "x", "\nx", "x\n", "\n x \n", "\t\tx"]) {
     const { fake, adapter } = setup();
     fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", draft);
     const snapshot = await adapter.observe();
     const composer = find(snapshot, /Message #general/);
-    await rejectsRefusal(adapter.insertText(snapshot, composer.id, "new"), "text_mismatch");
+    await rejectsRefusal(adapter.insertText(snapshot, composer.id, "new"), "composer_not_empty");
     assert.equal(fake.methodCalls("Input.insertText").length, 0);
     assert.equal(fake.methodCalls("Input.dispatchMouseEvent").length, 0);
     assert.equal(fake.currentDraft(), draft, "the refused draft is untouched");
@@ -378,8 +367,8 @@ test("editor emptiness accepts only absent, empty, and exact single-newline valu
   }
 });
 
-test("paragraphEqual compares non-empty lines exactly and in order, tolerating only blank-line differences", () => {
-  assert.equal(paragraphEqual("p1\np2", "p1\n\np2"), true, "a paragraph boundary may read back as a blank line");
+test("paragraphEqual preserves exact non-empty message lines while tolerating blank-line boundaries", () => {
+  assert.equal(paragraphEqual("p1\np2", "p1\n\np2"), true, "a paragraph boundary may be exposed as a blank line");
   assert.equal(paragraphEqual("p1", "p1"), true, "single-line messages are exact");
   assert.equal(paragraphEqual("p1\np2", "p1\np2\n\n"), true, "trailing blank lines are not significant");
   assert.equal(paragraphEqual("\n\np1\np2", "p1\np2"), true, "leading blank lines are not significant");
@@ -400,62 +389,15 @@ test("paragraphEqual compares non-empty lines exactly and in order, tolerating o
   assert.equal(paragraphEqual("p1\np2", "p2\np1"), false, "reordered lines refuse");
 });
 
-test("insertText verifies the live reproduction: a multi-paragraph draft reads back with blank-line joins", async () => {
-  // The 2026-09 live qa2 attempt: the six-paragraph report was inserted
-  // correctly, but the page read every paragraph boundary back as a blank
-  // line (requested "p1\np2\n...\np6", 362 characters; read-back
-  // "p1\n\np2\n\n...", 367 characters), so the exact read-back refused and
-  // nothing was posted. The synthetic page models that representation, and
-  // the canonical paragraph-aware read-back verifies it.
+test("insertText passes through page-transformed text for later sending and verification", async () => {
   const { fake, adapter } = setup();
+  fake.state.transformDraft = (draft) => `${draft} (changed by page)`;
   const snapshot = await adapter.observe();
   const composer = find(snapshot, /Message #general/);
-  const text = "p1\np2\np3\np4\np5\np6";
-  const report = await adapter.insertText(snapshot, composer.id, text);
-  assert.equal(report.verified, true);
-  assert.equal(report.readBack, "p1\n\np2\n\np3\n\np4\n\np5\n\np6");
-  assert.equal(fake.currentDraft(), text, "the stored draft is still the exact requested text");
-  assert.deepEqual(fake.methodCalls("Input.insertText").map((c) => c.params.text), [text]);
-});
-
-test("insertText still refuses any editor value holding a non-whitespace character", async () => {
-  for (const draft of ["x", "\nx", "x\n", "\n x \n", "\u00A0x", "\t\tx", "\nhello\n", " \u3000x", "x\u00A0"]) {
-    const { fake, adapter } = setup();
-    fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", draft);
-    const snapshot = await adapter.observe();
-    const composer = find(snapshot, /Message #general/);
-    await rejectsRefusal(adapter.insertText(snapshot, composer.id, "new"), "text_mismatch");
-    assert.equal(fake.methodCalls("Input.insertText").length, 0);
-    assert.equal(fake.methodCalls("Input.dispatchMouseEvent").length, 0);
-    assert.equal(fake.currentDraft(), draft, "the refused draft is untouched");
-  }
-});
-
-test("insertText tolerates paragraph-boundary artifacts in the read-back and refuses within-line differences", async () => {
-  // The paragraph-aware read-back tolerates exactly the blank-line artifact
-  // class a per-paragraph editor produces; anything differing within a line
-  // still refuses.
-  {
-    const { fake, adapter } = setup();
-    fake.state.transformDraft = (draft) => `${draft}\n`;
-    const snapshot = await adapter.observe();
-    const composer = find(snapshot, /Message #general/);
-    const report = await adapter.insertText(snapshot, composer.id, "exact");
-    assert.equal(report.verified, true);
-    assert.equal(report.readBack, "exact\n\n", "the trailing paragraph boundary reads back as a blank line");
-  }
-  {
-    const { fake, adapter } = setup();
-    fake.state.transformDraft = (draft) => `${draft} `;
-    const snapshot = await adapter.observe();
-    const composer = find(snapshot, /Message #general/);
-    await assert.rejects(adapter.insertText(snapshot, composer.id, "exact"), (/** @type {unknown} */ err) => {
-      assert.ok(err instanceof RefusalError);
-      assert.equal(err.code, "text_mismatch");
-      assert.equal(err.details.readBack, "exact ");
-      return true;
-    });
-  }
+  const report = await adapter.insertText(snapshot, composer.id, "exact");
+  assert.equal(report.textLength, "exact".length);
+  assert.equal(fake.currentDraft(), "exact (changed by page)");
+  assert.deepEqual(fake.methodCalls("Input.insertText").map((c) => c.params.text), ["exact"]);
 });
 
 /* ----------------------------- findText / waitFor ----------------------------- */
@@ -564,9 +506,9 @@ test("findText sequence succeeds only for the exact paragraph sequence", async (
 });
 
 test("findText sequence still verifies the single-node paragraph representation", async () => {
-  // The representation the composer read-back accepts (one node whose name
-  // reads every paragraph boundary as a blank line) verifies through the same
-  // sequence match: the run may span lines inside one node.
+  // One node whose name carries paragraph boundaries as blank lines
+  // verifies with the same paragraph-aware sequence semantics; the run may
+  // span lines inside the node.
   const { fake, adapter } = setup();
   fake.state.messages.set("/client/T0SYNTH/C0GENERAL", ["p1\n\np2\n\np3"]);
   const found = await adapter.findText("p1\np2\np3", { match: "sequence" });
@@ -617,157 +559,6 @@ const EMOJI_REPORT = [
 ].join("\n");
 /** The same profile with only accessibility-text comparison: the code before the emoji fix. */
 const ACCESSIBILITY_ONLY_PROFILE = { ...SLACK_PROFILE, name: "accessibility-only-test", inlineText: undefined, inlineEmoji: undefined, tokenizeInlineText: undefined };
-
-/**
- * @param {ReturnType<typeof setup>} env
- * @param {string} text
- */
-async function insertIntoGeneral({ adapter }, text) {
-  const snapshot = await adapter.observe();
-  const composer = find(snapshot, /Message #general/);
-  return adapter.insertText(snapshot, composer.id, text);
-}
-
-test("the 2026-09-25 reproduction: emoji images read back without their characters, so accessibility text alone refuses", async () => {
-  // Trigger: the client turns report emoji into images with empty alt text.
-  // Symptom: Chromium never reads an image into an editable's value, so the
-  // read-back is the text minus the emoji; everything else is identical.
-  const env = setup({}, { profile: ACCESSIBILITY_ONLY_PROFILE });
-  await assert.rejects(insertIntoGeneral(env, EMOJI_REPORT), (/** @type {unknown} */ err) => {
-    assert.ok(err instanceof RefusalError);
-    assert.equal(err.code, "text_mismatch");
-    const readBack = String(err.details.readBack);
-    assert.equal(readBack, EMOJI_REPORT.replace(/👤|⚖️|📅|📈/g, "").replace(/\n/g, "\n\n"));
-    return true;
-  });
-  // Masking condition: a plain-text draft never exercised the gap.
-  const plain = setup({}, { profile: ACCESSIBILITY_ONLY_PROFILE });
-  assert.equal((await insertIntoGeneral(plain, "QA2 new users\n1234")).verified, true);
-});
-
-test("insertText verifies the five-line emoji report by proving each emoji image from its attributes", async () => {
-  const env = setup();
-  const report = await insertIntoGeneral(env, EMOJI_REPORT);
-  assert.equal(report.verified, true);
-  assert.equal(report.inlineReplacements, 4);
-  assert.equal(env.fake.currentDraft(), EMOJI_REPORT);
-  assert.ok(env.fake.methodCalls("DOM.describeNode").some((call) => call.params.depth === -1));
-  // A plain-text draft still verifies through the accessibility value alone.
-  const plain = await insertIntoGeneral(setup(), "users today: 1234\nchange: +5%");
-  assert.equal(plain.inlineReplacements, 0);
-});
-
-test("recognized emoji images with unknown identity are positional before send but never verify a post", async () => {
-  const draft = setup();
-  draft.fake.state.emojiAttributes = (emoji, where) => where === "composer"
-    ? { class: "emoji", "data-id": ":unlisted:", "data-stringify-text": ":unlisted:", alt: "" }
-    : emojiImageAttributes(emoji, where);
-  const inserted = await insertIntoGeneral(draft, EMOJI_REPORT);
-  assert.equal(inserted.verified, true);
-  assert.equal(inserted.emojiIdentity, "unproven");
-  assert.ok(inserted.emojiProofs?.every((proof) => proof.identity === "unproven"));
-
-  const posted = setup({ splitMessages: true });
-  posted.fake.state.messages.set("/client/T0SYNTH/C0GENERAL", [EMOJI_REPORT]);
-  posted.fake.state.emojiAttributes = (emoji, where) => where === "message"
-    ? { class: "c-emoji__img", "data-stringify-type": "emoji", "data-stringify-emoji": ":unlisted:", alt: "" }
-    : emojiImageAttributes(emoji, where);
-  const verified = await posted.adapter.findText(EMOJI_REPORT, { match: "sequence" });
-  assert.equal(verified.count, 0);
-  assert.equal(verified.emojiIdentity, "unproven");
-  assert.equal(verified.verification, "emoji_identity_unproven");
-});
-
-test("insertText proves the ja-JP composer shape (spoken alt) and refuses it without the typed shortcode pair", async () => {
-  // The fixture's composer images are the real ja-JP shape: data-id and
-  // data-stringify-text beside a spoken alt such as "天秤 絵文字".
-  const sample = /** @type {Parameters<typeof emojiImageAttributes>[0]} */ ({ unicode: "⚖️", shortcode: "scales", file: "2696-fe0f", label: "scales", localizedAlt: ":天秤:" });
-  assert.equal(emojiImageAttributes(sample, "composer").alt, "天秤 絵文字");
-  assert.equal(emojiImageAttributes(sample, "composer")["data-id"], ":scales:");
-  const ja = await insertIntoGeneral(setup(), EMOJI_REPORT);
-  assert.equal(ja.verified, true);
-  assert.equal(ja.inlineReplacements, 4);
-  // Contrast: the empty alt the fixture assumed before still verifies.
-  const empty = setup();
-  empty.fake.state.emojiAttributes = (e, w) => ({ ...emojiImageAttributes(e, w), ...(w === "composer" ? { alt: "" } : {}) });
-  assert.equal((await insertIntoGeneral(empty, EMOJI_REPORT)).inlineReplacements, 4);
-  // A spoken alt never proves an emoji by itself, and the pair decides which emoji it is.
-  const swapped = setup();
-  swapped.fake.state.emojiAttributes = (e, w) => (w === "composer" && e.shortcode === "scales" ? { ...emojiImageAttributes(e, w), "data-id": ":date:", "data-stringify-text": ":date:" } : emojiImageAttributes(e, w));
-  await rejectsRefusal(insertIntoGeneral(swapped, EMOJI_REPORT), "text_mismatch");
-});
-
-test("insertText refuses missing, changed, moved, reordered, extra, and respelled emoji and unrelated text changes", async () => {
-  /** @type {Array<[string, (draft: string) => string, string?]>} */
-  const cases = [
-    ["missing emoji", (d) => d.replace("👤", "")],
-    ["another provable emoji", (d) => d.replace("👤", "📅")],
-    ["a known different emoji", (d) => d.replace("👤", "📅")],
-    ["moved within its line", (d) => d.replace("👤 1,234人", " 1,234人👤")],
-    ["reordered lines", (d) => { const l = d.split("\n"); return [l[0], l[2], l[1], l[3], l[4]].join("\n"); }],
-    ["an extra emoji", (d) => `${d}📅`],
-    ["a text change unrelated to emoji", (d) => d.replace("1,234人", "1,235人")],
-    ["a respelled scales emoji without U+FE0F in the caller text", (d) => d, "⚖"],
-  ];
-  for (const [name, transform, scales] of cases) {
-    const env = setup();
-    env.fake.state.transformDraft = transform;
-    const text = scales === undefined ? EMOJI_REPORT : EMOJI_REPORT.replace("⚖️", scales);
-    await rejectsRefusal(insertIntoGeneral(env, text), "text_mismatch").catch((err) => {
-      throw new Error(`${name}: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  }
-});
-
-test("an unexpected emoji image is refused even when the accessibility value alone would match", async () => {
-  // Accessibility text cannot see an image, so without the DOM an extra
-  // emoji would verify; the proven reading shows it.
-  const env = setup();
-  env.fake.state.transformDraft = (draft) => `${draft}👤`;
-  await rejectsRefusal(insertIntoGeneral(env, "users today: 1234"), "text_mismatch");
-  const unproven = setup();
-  unproven.fake.state.transformDraft = (draft) => `${draft}👥`;
-  await rejectsRefusal(insertIntoGeneral(unproven, "users today: 1234"), "text_mismatch");
-});
-
-test("insertText refuses unresolved or contradicted emoji images", async () => {
-  /** @type {Array<[string, (emoji: Parameters<typeof emojiImageAttributes>[0], where: "composer"|"message") => Record<string, string>]>} */
-  const cases = [
-    ["no identity attribute", () => ({ alt: "", src: "/static/blank.png" })],
-    ["conflicting shortcode fields", (e, w) => ({ ...emojiImageAttributes(e, w), "data-id": ":date:" })],
-    ["a skin-tone shortcode", () => ({ class: "custom-inline-image", alt: "", src: "/static/blank.png" })],
-    ["a custom shortcode", () => ({ class: "custom-inline-image", alt: "", src: "/static/blank.png" })],
-    ["a different emoji character in alt", (e, w) => ({ ...emojiImageAttributes(e, w), alt: "👥" })],
-    ["a known disagreement with data-stringify-text", (e, w) => ({ ...emojiImageAttributes(e, w), "data-stringify-text": e.shortcode === "date" ? ":scales:" : ":date:" })],
-  ];
-  for (const [name, attributes] of cases) {
-    const env = setup();
-    env.fake.state.emojiAttributes = attributes;
-    await rejectsRefusal(insertIntoGeneral(env, "👤 1,234人"), "text_mismatch").catch((err) => {
-      throw new Error(`${name}: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  }
-  const env = setup();
-  env.fake.state.emojiAttributes = (e) => ({ class: "custom-inline-image", alt: e.unicode, src: `/production-standard-emoji-assets/15.0/google-medium/${e.file}.png` });
-  await rejectsRefusal(insertIntoGeneral(env, "👤 1,234人"), "text_mismatch");
-});
-
-test("editorHolds refuses when the accessibility value disagrees with the editable's DOM text", async () => {
-  const { fake, adapter } = setup();
-  fake.state.drafts.set("/client/T0SYNTH/C0GENERAL", "👤 1,234人");
-  const snapshot = await adapter.observe();
-  const composer = find(snapshot, /Message #general/);
-  assert.deepEqual(await adapter.editorHolds(composer.backendNodeId, " 1,234人", "👤 1,234人"), { ok: true, inlineReplacements: 1, reason: null, check: null, emojiIdentity: "proven", emojiProofs: [{ line: 1, offset: 0, identity: "proven" }] });
-  const hidden = await adapter.editorHolds(composer.backendNodeId, " 1,234人 extra", "👤 1,234人");
-  assert.equal(hidden.ok, false);
-  assert.match(String(hidden.reason), /disagrees/);
-  assert.equal(hidden.check, "ax_dom_disagree");
-  const changed = await adapter.editorHolds(composer.backendNodeId, " 1,234人", "📅 1,234人");
-  assert.equal(changed.check, "emoji_identity_contradicted");
-  const gone = await adapter.editorHolds(987654, " 1,234人", "👤 1,234人");
-  assert.equal(gone.ok, false);
-  assert.equal(gone.check, "not_describable");
-});
 
 test("domText reads text, line breaks, blocks, proven elements, and unresolved opaque elements", () => {
   /** @param {string} name @param {Record<string, string>} [attributes] @param {object[]} [children] */

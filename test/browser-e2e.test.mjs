@@ -2,8 +2,8 @@
  * Opt-in end-to-end run of the bounded workflow against the synthetic Slack
  * page in a real headless Chromium: the page's script turns the report's
  * Unicode emoji into images the way the real client does, so Chromium's own
- * accessibility tree and DOM exercise the insertText read-back, the
- * send-time composer check, and the post verification. Nothing leaves
+ * accessibility tree and DOM exercise mechanical text insertion and the
+ * post-send verification. Nothing leaves
  * 127.0.0.1, and the decision dependency is the offline label matcher.
  *
  * Skipped unless JEV_CU_E2E_CHROME names a Chromium or Chrome binary and the
@@ -192,20 +192,16 @@ const send = (adapter, flow = SELF_DM_FLOW) =>
     duplicateMarker: MARKERS,
   });
 
-test("real Chromium: accessibility text alone refuses the emoji report before the send click (the 2026-09-25 refusal)", { skip: SKIP }, async () => {
+test("real Chromium: missing post emoji proof reports unverified after one send", { skip: SKIP }, async () => {
   const { session, cleanup } = await launch();
   try {
     const profile = { ...SLACK_LOCAL_SYNTHETIC_PROFILE, name: "accessibility-only-test", inlineText: undefined, inlineEmoji: undefined, tokenizeInlineText: undefined };
     const report = await send(adapterFor(session, profile));
-    assert.equal(report.status, "refused");
-    assert.equal(report.refusal?.code, "text_mismatch");
-    assert.equal(report.completed, "navigate");
-    // Chromium's own read-back: the text with every emoji image missing.
-    assert.equal(
-      String(report.refusal?.details.readBack).split("\n").filter((line) => line !== "").join("\n"),
-      EMOJI_REPORT.replace(/👤|⚖️|📅|📈/g, ""),
-    );
-    assert.deepEqual(await renderedMessages(session), []);
+    assert.equal(report.status, "unverified");
+    assert.equal(report.completed, "send");
+    assert.equal((await renderedMessages(session)).length, 1);
+    const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+    assert.equal(posted?.verified, false);
   } finally {
     await cleanup();
   }
@@ -244,10 +240,6 @@ test("real Chromium: the emoji report posts once to the self-DM in the approved 
     const report = await send(adapter);
     assert.equal(report.status, "executed", JSON.stringify(report.refusal));
     assert.match(report.destination.candidate?.url ?? "", /\/client\/T0SYNTH\/D0SELF$/);
-    const composer = /** @type {{inlineReplacements: number}|undefined} */ (
-      report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act")
-    );
-    assert.equal(composer?.inlineReplacements, 4);
     const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
     assert.equal(posted?.verified, true);
     assert.deepEqual(await renderedMessages(session), [
@@ -304,7 +296,7 @@ test("real Chromium: the emoji report posts once to the self-DM in the approved 
   }
 });
 
-test("real Chromium: the ja-JP composer's spoken emoji alt stays out of the read-back and a spoofed composer identity refuses before the send click", { skip: SKIP }, async () => {
+test("real Chromium: composer emoji metadata is not a pre-send gate; posted identity remains verified", { skip: SKIP }, async () => {
   /** @type {Array<[string, string]>} */
   const spoofs = [
     ["a disagreeing data-stringify-text", `img.setAttribute("data-stringify-text", ":date:")`],
@@ -322,23 +314,22 @@ test("real Chromium: the ja-JP composer's spoken emoji alt stays out of the read
           document.querySelectorAll("#composer img[data-id=':scales:']:not([data-spoofed])").forEach(function (img) {
             img.setAttribute("data-spoofed", "");
             ${spoof};
+            document.documentElement.setAttribute("data-composer-spoofed", "true");
           });
         }).observe(document, { subtree: true, childList: true })`,
       });
       const report = await send(adapterFor(session, SLACK_LOCAL_SYNTHETIC_PROFILE));
-      assert.equal(report.status, "refused", name);
-      assert.equal(report.refusal?.code, "text_mismatch", name);
-      assert.equal(report.completed, "navigate", name);
-      assert.deepEqual(await renderedMessages(session), [], name);
-      const { result } = await session.send("Runtime.evaluate", { returnByValue: true, expression: `document.querySelectorAll("#composer img[data-spoofed]").length` });
-      assert.equal(result.value, 1, `${name}: the spoof reached the composer`);
+      assert.equal(report.status, "executed", name);
+      assert.equal(report.completed, "send", name);
+      assert.equal((await renderedMessages(session)).length, 1, name);
+      const { result } = await session.send("Runtime.evaluate", { returnByValue: true, expression: `document.documentElement.getAttribute("data-composer-spoofed")` });
+      assert.equal(result.value, "true", `${name}: the spoof reached the composer`);
     } finally {
       await cleanup();
     }
   }
-  // Missing the secondary serialization field leaves identity unknown, not
-  // contradictory. The recognized Slack image passes only at its exact
-  // composer position; the posted rendering must still prove its identity.
+  // Missing composer serialization metadata does not block sending; the
+  // posted rendering must independently prove its emoji identity.
   const partial = await launch();
   try {
     await partial.session.send("Page.enable", {});
@@ -347,11 +338,14 @@ test("real Chromium: the ja-JP composer's spoken emoji alt stays out of the read
         document.querySelectorAll("#composer img[data-id=':scales:']:not([data-spoofed])").forEach(function (img) {
           img.setAttribute("data-spoofed", "");
           img.removeAttribute("data-stringify-text");
+          document.documentElement.setAttribute("data-composer-partial", "true");
         });
       }).observe(document, { subtree: true, childList: true })`,
     });
     const report = await send(adapterFor(partial.session, SLACK_LOCAL_SYNTHETIC_PROFILE));
     assert.equal(report.status, "executed", JSON.stringify(report.refusal));
+    const { result: partialComposer } = await partial.session.send("Runtime.evaluate", { returnByValue: true, expression: `document.documentElement.getAttribute("data-composer-partial")` });
+    assert.equal(partialComposer.value, "true");
     const posted = /** @type {{verified: boolean, count: number, emojiIdentity: string, verification: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
     assert.equal(posted?.verified, true);
     assert.equal(posted?.count, 1);
