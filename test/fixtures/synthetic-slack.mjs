@@ -135,10 +135,9 @@ export function conversationPath(page, c) {
  * Unicode emoji the synthetic client converts into image elements, the way
  * the real Slack client replaces an emoji character typed or inserted into
  * its composer (and rendered in a posted message) with an `<img>`. Chromium
- * never reads an `<img>` into a contenteditable's accessibility value, and
- * the composer's emoji images carry an empty `alt`, so the accessibility
- * read-back of a draft holding emoji lacks them (the 2026-09-25 self-DM
- * refusal). Shortcodes and asset file names follow Slack's standard emoji set;
+ * never includes an `<img>` in a contenteditable's accessibility value, and
+ * the composer's emoji images carry an empty `alt`. Shortcodes and asset file
+ * names follow Slack's standard emoji set;
  * `👥` is here as a counterexample the Slack profile cannot prove, and a bare
  * `⚖` (no U+FE0F) converts to the same `:scales:` image as `⚖️`.
  * `localizedAlt` is the `alt` a ja-JP client gives a posted emoji image: the

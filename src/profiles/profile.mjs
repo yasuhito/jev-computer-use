@@ -82,7 +82,7 @@ export const ACTIONS = Object.freeze({
  * @property {ReadonlySet<string>} [attributeRoles] accessibility roles whose element attributes the adapter fetches (one DOM.describeNode per node) before recognition; absent means none
  * @property {ReadonlySet<string>} [textSequenceContainerRoles] accessibility roles that bound one multi-node text sequence
  * @property {(element: DomElementFacts) => string|null|undefined} [inlineText] proves the text an inline element stands for when the page renders text as a non-text element: a string is proven, null is recognized but unproven, undefined leaves the element to the adapter's generic rules; strict verification uses this hook
- * @property {(element: DomElementFacts) => InlineEmojiIdentity|undefined} [inlineEmoji] classifies a recognized emoji element without treating arbitrary opaque elements as emoji; unknown identity may be accepted only at a strict positional pre-send boundary
+ * @property {(element: DomElementFacts) => InlineEmojiIdentity|undefined} [inlineEmoji] classifies a recognized posted-message emoji without treating arbitrary opaque elements as emoji; post verification requires proven identity
  * @property {(text: string) => InlineTextToken[]} [tokenizeInlineText] splits caller text into its exact text and profile-supported emoji tokens
  * @property {(target: ObservedTarget) => {ok: boolean, reason?: string}} checkTarget
  * @property {(node: ObservedNode, target: ObservedTarget) => Recognition|null} recognize

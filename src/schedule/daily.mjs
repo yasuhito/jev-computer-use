@@ -6,32 +6,38 @@
  *
  * - Single-attempt idempotency: immediately before the send click, write a
  *   durable per-date `attempted` record. After that point, never retry this
- *   date automatically, including after an uncertain transport or
- *   verification result. Replace the marker with `posted` only when the
- *   workflow verifies the exact post. Duplicate detection checks posted
- *   message containers, not a possibly unposted draft.
+ *   date automatically. Replace the marker with `posted` only when the
+ *   workflow verifies the exact post; persist `posted_unverified` when a
+ *   completed send has visible marker evidence but fails text or emoji
+ *   verification. Duplicate detection
+ *   checks posted message containers, not a possibly unposted draft.
  * - Single-run exclusion: an exclusive lock file in the state directory, so
  *   a timer catch-up and a manual run cannot race. Locks left by a previous
  *   boot or a dead process are broken; a live run is not.
  *
  * Output scrubbing: attempt notes retain statuses, codes, and closed-set
- * diagnostic labels, as documented in README "jev-cu-daily: Output". The
- * report's own stdout and stderr are captured and dropped so unattended logs
+ * post-verification labels, as documented in README "jev-cu-daily: Output".
+ * The report's own stdout and stderr are captured and dropped so unattended logs
  * stay free of report data and deployment-specific values.
  */
 import { addDays, utcDateOf } from "../report/dates.mjs";
-import { EDITOR_CHECKS } from "../cdp/adapter.mjs";
 import { DEFAULT_CDP_ENDPOINT } from "../cdp/transport.mjs";
 import { DEFAULT_PROFILE_NAME } from "../profiles/index.mjs";
 import { DEFAULT_MAX_CANDIDATES, HARD_MAX_CANDIDATES } from "../validate.mjs";
 import { DEFAULT_BROWSE_MIN_CONFIDENCE } from "../workflow.mjs";
-import { FileRecordStore, acquireRunLock } from "./state.mjs";
+import {
+  FileRecordStore,
+  acquireRunLock,
+  POST_MISMATCH_VERIFICATIONS,
+  SAFE_EMOJI_IDENTITIES,
+  SAFE_POST_VERIFICATIONS,
+} from "./state.mjs";
 import { runReportJob } from "../../bin/jev-cu-report.mjs";
 
 export const DAILY_TOOL = "jev-cu-daily";
 export const DAILY_VERSION = "0.2.0";
 
-/** @typedef {"posted"|"already-posted"|"already-attempted"|"skipped-locked"|"dry-run"|"uncertain"|"failed"} DailyStatus */
+/** @typedef {"posted"|"posted_unverified"|"already-posted"|"already-posted-unverified"|"already-attempted"|"skipped-locked"|"dry-run"|"uncertain"|"failed"} DailyStatus */
 /** @typedef {"send"|"dry-run"} DailyMode */
 
 export const DAILY_DESTINATION = "qa2";
@@ -48,9 +54,9 @@ const VALUE_FLAGS = new Set([
 const USAGE = `Usage: jev-cu-daily [options]
 
 Run the daily New Users report once for its target date (the last complete
-UTC day): skip when that date is already recorded as posted or attempted,
-otherwise run jev-cu-report --mode send once. The attempted record is written
-immediately before the send click. An uncertain result is never retried
+UTC day): skip when that date is already recorded as posted, posted_unverified,
+or attempted, otherwise run jev-cu-report --mode send once. The attempted record
+is written immediately before the send click. An uncertain result is never retried
 automatically. Designed for a daily systemd timer; credentials and the
 browser session come from the operator's environment.
 
@@ -67,7 +73,8 @@ Options:
 
 Destination: the exact Slack channel qa2. Environment: SNOWFLAKE_* and
 TYPESAFE_API_KEY as in jev-cu-report. Exit codes: 0 posted, already-posted,
-skipped-locked, or dry-run; 1 already-attempted, uncertain, or failed;
+skipped-locked, or dry-run; 1 posted_unverified, already-posted-unverified,
+already-attempted, uncertain, or failed;
 2 usage error.`;
 
 /**
@@ -180,8 +187,6 @@ export function parseDailyArgs(argv, _context = {}) {
  * @property {string|null} refusalCode from the workflow's or the payload's refusal
  * @property {string|null} errorCode
  * @property {"navigate"|"draft"|"send"|null} completed the workflow's last completed stage
- * @property {string|null} stage where a text_mismatch refusal happened (TEXT_CHECK_STAGES), "other", or null
- * @property {string|null} check which composer check refused (EDITOR_CHECKS), "other", or null
  * @property {string|null} emojiIdentity the verified identity summary, if present
  * @property {string|null} verification the closed-set post-verification outcome
  */
@@ -189,14 +194,6 @@ export function parseDailyArgs(argv, _context = {}) {
 /** The workflow stages a note may name; anything else is null. */
 const COMPLETED_STAGES = Object.freeze(new Set(["navigate", "draft", "send"]));
 
-/**
- * Where a text_mismatch refusal can happen: the emptiness check before
- * inserting, the insertText read-back, the composer check before the send
- * decision, and the same check inside the send click's gate.
- */
-export const TEXT_CHECK_STAGES = Object.freeze(new Set(["draft_precheck", "draft_readback", "send_precheck", "send_gate"]));
-const EMOJI_IDENTITIES = Object.freeze(new Set(["proven", "unproven", "contradicted", "not_applicable", "not_verified"]));
-const POST_VERIFICATIONS = Object.freeze(new Set(["verified", "emoji_identity_unproven", "emoji_identity_contradicted", "text_mismatch", "text_not_exposed", "not_found"]));
 
 /** @typedef {{code: number, payload: Record<string, unknown>|null}} ReportResult */
 /** @typedef {(input: {endpoint: string, targetId: string|null, profile: import("../profiles/profile.mjs").Profile}) => Promise<import("../cdp/adapter.mjs").CdpSession>} ConnectFn */
@@ -204,9 +201,9 @@ const POST_VERIFICATIONS = Object.freeze(new Set(["verified", "emoji_identity_un
 /**
  * Scrub one report result down to statuses and codes. No message, no
  * numbers, no destination, no key. Besides the status and codes, the note
- * keeps only closed-set labels: the workflow's last completed stage and, for
- * a composer text refusal, where it happened and which check refused, so a
- * refused run says why without its dropped report output.
+ * keeps only the workflow's last completed stage and closed-set post-
+ * verification diagnostics, so an unattended result reports whether a post
+ * was verified without its dropped report output.
  *
  * @param {number} attempt
  * @param {ReportResult} result
@@ -224,22 +221,6 @@ function noteOf(attempt, result) {
   const error = p !== null && typeof p.error === "object" && p.error !== null ? /** @type {Record<string, unknown>} */ (p.error) : null;
   /** @param {Record<string, unknown>|null} v */
   const code = (v) => (v !== null && typeof v.code === "string" ? v.code : null);
-  const details =
-    refusal !== null && typeof refusal.details === "object" && refusal.details !== null
-      ? /** @type {Record<string, unknown>} */ (refusal.details)
-      : null;
-  /**
-   * A closed-set label from the refusal details: a known value passes, any
-   * other present value becomes "other", so no page text can reach the note.
-   *
-   * @param {string} key
-   * @param {ReadonlySet<string>} known
-   */
-  const label = (key, known) => {
-    const value = details?.[key];
-    if (value === undefined || value === null) return null;
-    return typeof value === "string" && known.has(value) ? value : "other";
-  };
   const completed = send !== null && typeof send.completed === "string" && COMPLETED_STAGES.has(send.completed) ? send.completed : null;
   const steps = send !== null && Array.isArray(send.steps) ? send.steps : [];
   const posted = steps.find((step) => typeof step === "object" && step !== null && step.step === "posted");
@@ -254,10 +235,8 @@ function noteOf(attempt, result) {
     refusalCode: code(refusal),
     errorCode: code(error),
     completed: /** @type {AttemptNote["completed"]} */ (completed),
-    stage: label("stage", TEXT_CHECK_STAGES),
-    check: label("check", EDITOR_CHECKS),
-    emojiIdentity: safeStepValue("emojiIdentity", EMOJI_IDENTITIES),
-    verification: safeStepValue("verification", POST_VERIFICATIONS),
+    emojiIdentity: safeStepValue("emojiIdentity", SAFE_EMOJI_IDENTITIES),
+    verification: safeStepValue("verification", SAFE_POST_VERIFICATIONS),
   };
 }
 
@@ -273,6 +252,21 @@ function isVerifiedSend(result) {
   if (send === null || send.status !== "executed" || !Array.isArray(send.steps)) return false;
   const posted = send.steps.find((step) => typeof step === "object" && step !== null && step.step === "posted");
   return posted?.verified === true && posted?.verification === "verified" && posted?.emojiIdentity === "proven";
+}
+
+/**
+ * Whether the send click completed but post-verification failed. This is
+ * durably distinct from an uncertain attempt whose send outcome is unknown.
+ * @param {ReportResult} result
+ */
+function isUnverifiedPost(result) {
+  const payload = result.payload;
+  if (payload === null || payload.status !== "unverified") return false;
+  const send = typeof payload.send === "object" && payload.send !== null ? /** @type {Record<string, any>} */ (payload.send) : null;
+  if (send === null || send.status !== "unverified" || send.completed !== "send" || !Array.isArray(send.steps)) return false;
+  const posted = send.steps.find((step) => typeof step === "object" && step !== null && step.step === "posted");
+  return posted?.verified === false && posted.postEvidence === true && typeof posted.verification === "string" &&
+    POST_MISMATCH_VERIFICATIONS.has(posted.verification);
 }
 
 /**
@@ -364,7 +358,11 @@ export async function runDailyJob({
       const attempts = [];
       const existing = await state.read(targetDate);
       if (existing) {
-        const status = existing.status === "posted" ? "already-posted" : "already-attempted";
+        const status = existing.status === "posted"
+          ? "already-posted"
+          : existing.status === "posted_unverified"
+            ? "already-posted-unverified"
+            : "already-attempted";
         return { code: existing.status === "posted" ? 0 : 1, payload: dailyPayload({ status, mode: options.mode, targetDate, attempts, record: existing }) };
       }
 
@@ -382,7 +380,8 @@ export async function runDailyJob({
         attemptRecord = marker;
       };
       const result = await attemptOnce(options, runStartedAt, markAttempt);
-      attempts.push(noteOf(1, result));
+      const attemptNote = noteOf(1, result);
+      attempts.push(attemptNote);
       const p = result.payload;
       if (options.mode === "dry-run" && p !== null && p.status === "dry-run") {
         return { code: 0, payload: dailyPayload({ status: "dry-run", mode: options.mode, targetDate, attempts, record: null }) };
@@ -398,6 +397,23 @@ export async function runDailyJob({
         });
         await state.write(record);
         return { code: 0, payload: dailyPayload({ status: "posted", mode: options.mode, targetDate, attempts, record }) };
+      }
+      if (attemptRecord !== null && result.code === 0 && isUnverifiedPost(result)) {
+        const marker = /** @type {import("./state.mjs").AttemptRecord} */ (/** @type {unknown} */ (attemptRecord));
+        const recordedAt = new Date(now()).toISOString();
+        const record = /** @type {import("./state.mjs").PostedUnverifiedRecord} */ ({
+          date: targetDate,
+          status: "posted_unverified",
+          attemptedAt: marker.attemptedAt,
+          attempts: 1,
+          recordedAt,
+          diagnostic: {
+            emojiIdentity: attemptNote.emojiIdentity ?? "not_verified",
+            verification: attemptNote.verification ?? "not_found",
+          },
+        });
+        await state.write(record);
+        return { code: 1, payload: dailyPayload({ status: "posted_unverified", mode: options.mode, targetDate, attempts, record }) };
       }
       if (attemptRecord !== null) {
         return { code: 1, payload: dailyPayload({ status: "uncertain", mode: options.mode, targetDate, attempts, record: attemptRecord }) };

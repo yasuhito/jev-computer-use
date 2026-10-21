@@ -215,7 +215,7 @@ test("navigate mode reports unverified when the URL never changes", async () => 
 
 /* ----------------------------- draft ----------------------------- */
 
-test("draft mode navigates, inserts the exact text, verifies it, and never sends", async () => {
+test("draft mode navigates, inserts the exact text without verifying it, and never sends", async () => {
   const env = setup();
   const report = await run(env, { mode: "draft", text: TEXT });
   assert.equal(report.status, "executed");
@@ -225,9 +225,10 @@ test("draft mode navigates, inserts the exact text, verifies it, and never sends
   assert.deepEqual(env.fake.currentMessages(), []);
   assert.equal(env.fake.clicks().length, 2);
   assert.deepEqual(env.fake.methodCalls("Input.insertText").map((c) => c.params.text), [TEXT]);
-  const draft = /** @type {{readBack: string, verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
+  const draft = /** @type {Record<string, unknown>|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
   assert.ok(draft);
-  assert.equal(draft.readBack, TEXT);
+  assert.equal("readBack" in draft, false);
+  assert.equal("verified" in draft, false);
   assert.deepEqual(env.fake.state.sideEffects, []);
 });
 
@@ -249,7 +250,7 @@ test("draft mode refuses a composer that already holds a draft", async () => {
   env.fake.state.drafts.set("/client/T0SYNTH/C0QA2METRICS", "leftover");
   const report = await run(env, { mode: "draft", text: TEXT });
   assert.equal(report.status, "refused");
-  assert.equal(report.refusal?.code, "text_mismatch");
+  assert.equal(report.refusal?.code, "composer_not_empty");
   assert.equal(env.fake.methodCalls("Input.insertText").length, 0);
   assert.equal(env.fake.currentDraft(), "leftover");
 });
@@ -266,21 +267,21 @@ test("draft mode accepts a composer whose only draft is the blank editor newline
   assert.equal(env.fake.currentDraft(), TEXT);
 });
 
-test("draft mode refuses when the read-back differs from the exact text", async () => {
+test("draft mode does not compare a page-transformed value after insertion", async () => {
   const env = setup();
   env.fake.state.transformDraft = (d) => `${d} (edited by page)`;
   const report = await run(env, { mode: "draft", text: TEXT });
-  assert.equal(report.status, "refused");
-  assert.equal(report.refusal?.code, "text_mismatch");
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "draft");
+  assert.equal(env.fake.currentDraft(), `${TEXT} (edited by page)`);
+  const composer = /** @type {Record<string, unknown>|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "composer"));
+  assert.ok(composer);
+  assert.equal("readBack" in composer, false);
+  assert.equal("verified" in composer, false);
   assert.deepEqual(env.fake.currentMessages(), []);
 });
 
-test("draft mode verifies the live reproduction: a multi-paragraph text whose paragraphs read back as blank lines", async () => {
-  // The 2026-09 qa2 live attempt: the six-paragraph report was inserted
-  // correctly, but the page read every paragraph boundary back as a blank
-  // line (362 characters requested, 367 read back), so the exact read-back
-  // refused and nothing was posted. The canonical paragraph-aware comparison
-  // verifies exactly that representation.
+test("draft mode inserts a multi-paragraph message without text verification", async () => {
   const env = setup();
   const text = [
     "QA2 new users (Live) for 2026-09-20 (UTC)",
@@ -293,18 +294,19 @@ test("draft mode verifies the live reproduction: a multi-paragraph text whose pa
   assert.equal(report.status, "executed");
   assert.equal(report.completed, "draft");
   assert.equal(env.fake.currentDraft(), text, "the draft itself is the exact requested text");
-  const draft = /** @type {{readBack: string, verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
+  const draft = /** @type {Record<string, unknown>|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
   assert.ok(draft);
-  assert.equal(draft.verified, true);
-  assert.equal(draft.readBack, text.replace(/\n/g, "\n\n"), "the page reads every paragraph boundary as a blank line");
+  assert.equal("readBack" in draft, false);
+  assert.equal("verified" in draft, false);
 });
 
-test("draft mode refuses a multi-paragraph text when any non-empty line differs", async () => {
+test("draft mode leaves a page-transformed multi-paragraph message in the composer", async () => {
   const env = setup();
   env.fake.state.transformDraft = (d) => d.replace("1,234", "1,234 or more");
-  const report = await run(env, { mode: "draft", text: "p1\nNew users on 2026-09-20: 1,234\np3" });
-  assert.equal(report.status, "refused");
-  assert.equal(report.refusal?.code, "text_mismatch");
+  const text = "p1\nNew users on 2026-09-20: 1,234\np3";
+  const report = await run(env, { mode: "draft", text });
+  assert.equal(report.status, "executed");
+  assert.equal(env.fake.currentDraft(), "p1\nNew users on 2026-09-20: 1,234 or more\np3");
   assert.deepEqual(env.fake.currentMessages(), []);
 });
 
@@ -327,7 +329,7 @@ test("send mode drafts, clicks send once, and verifies the message was posted", 
   assert.equal(env.fake.methodCalls("Input.dispatchKeyEvent").length, 0);
 });
 
-test("the send-attempt callback runs once after composer gates and immediately before the send click", async () => {
+test("the send-attempt callback runs after insertion and immediately before the send click", async () => {
   const env = setup();
   /** @type {string[]} */
   const order = [];
@@ -336,7 +338,6 @@ test("the send-attempt callback runs once after composer gates and immediately b
     text: TEXT,
     onBeforeSend: async () => {
       order.push("before-send");
-      assert.equal(env.fake.currentDraft(), TEXT);
       assert.equal(env.fake.currentMessages().length, 0);
       assert.equal(env.fake.clicks().length, 2, "destination and composer were clicked; send has not been clicked yet");
     },
@@ -355,8 +356,8 @@ test("send mode reports unverified when the page swallows the send", async () =>
   assert.equal(env.fake.clicks().length, 3);
 });
 
-test("send mode verifies the post even when the cleared composer keeps the blank newline artifact", async () => {
-  // A page whose cleared blank composer keeps the whitespace-only artifact
+test("send mode verifies the post when the cleared composer keeps the blank editor artifact", async () => {
+  // A cleared composer that keeps the single blank editor line
   // (Chromium: U+000A) counts as empty, so the post is still verified.
   const env = setup();
   env.fake.state.clearedDraft = "\n";
@@ -364,20 +365,35 @@ test("send mode verifies the post even when the cleared composer keeps the blank
   assert.equal(report.status, "executed");
   assert.equal(report.completed, "send");
   assert.deepEqual(env.fake.currentMessages(), [TEXT]);
-  const posted = /** @type {{verified: boolean, url: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  const posted = /** @type {{verified: boolean, composerCleared: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
   assert.ok(posted);
   assert.equal(posted.verified, true);
+  assert.equal(posted.composerCleared, true);
   assert.equal(env.fake.currentDraft(), "\n");
 });
 
-test("send mode verifies the live reproduction end to end: multi-paragraph draft, composer check, and posted verification", async () => {
-  // The 2026-09 qa2 live attempt refused before Send because every safety
-  // comparison was exact while the page reads paragraph boundaries as blank
-  // lines. All three now compare through the canonical paragraph-aware
-  // equality, so the same flow verifies: the read-back, the send-time
-  // composer check, and the posted-message verification (here in the joined
-  // single-node form the composer representation takes; the split
-  // message-list form is covered below).
+test("send mode reports a verified post with composerCleared false when the composer keeps text after send", async () => {
+  // Composer emptiness is observed after the send but never gates the post
+  // verification, and its contents are never compared with the caller text.
+  const env = setup();
+  env.fake.state.clearedDraft = `${TEXT} retained by page`;
+  const report = await run(env, { mode: "send", text: TEXT });
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
+  assert.deepEqual(env.fake.currentMessages(), [TEXT]);
+  const posted = /** @type {{verified: boolean, postEvidence: boolean, composerCleared: boolean, verification: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.ok(posted);
+  assert.equal(posted.verified, true);
+  assert.equal(posted.postEvidence, true);
+  assert.equal(posted.composerCleared, false);
+  assert.equal(posted.verification, "verified");
+  assert.equal(env.fake.clicks().length, 3);
+  assert.equal(env.fake.currentDraft(), `${TEXT} retained by page`);
+});
+
+test("send mode verifies a multi-paragraph post without comparing composer text", async () => {
+  // The post retains strict paragraph-aware verification even though the
+  // inserted composer text is never compared with the caller text before send.
   const env = setup();
   const text = [
     "QA2 new users (Live) for 2026-09-20 (UTC)",
@@ -389,10 +405,10 @@ test("send mode verifies the live reproduction end to end: multi-paragraph draft
   const report = await run(env, { mode: "send", text });
   assert.equal(report.status, "executed");
   assert.equal(report.completed, "send");
-  const draft = /** @type {{readBack: string, verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
+  const draft = /** @type {Record<string, unknown>|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
   assert.ok(draft);
-  assert.equal(draft.verified, true);
-  assert.equal(draft.readBack, text.replace(/\n/g, "\n\n"), "the page reads every paragraph boundary as a blank line");
+  assert.equal("readBack" in draft, false);
+  assert.equal("verified" in draft, false);
   assert.deepEqual(env.fake.currentMessages(), [text], "the posted content is the requested text");
   assert.equal(env.fake.currentDraft(), "");
   const posted = /** @type {{verified: boolean, url: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
@@ -400,18 +416,22 @@ test("send mode verifies the live reproduction end to end: multi-paragraph draft
   assert.equal(posted.verified, true);
 });
 
-test("send mode refuses when the draft changed between typing and sending", async () => {
+test("send mode uses visible marker evidence to report a changed post", async () => {
   const env = setup();
   const decide = decideByLabel(FULL_FLOW, {
     onCall: (index) => {
       if (index === 2) env.fake.state.drafts.set("/client/T0SYNTH/C0QA2METRICS", `${TEXT} tampered`);
     },
   });
-  const report = await run(env, { mode: "send", text: TEXT, decide });
-  assert.equal(report.status, "refused");
-  assert.equal(report.refusal?.code, "text_mismatch");
-  assert.equal(env.fake.clicks().length, 2);
-  assert.deepEqual(env.fake.currentMessages(), []);
+  const report = await run(env, { mode: "send", text: TEXT, decide, duplicateMarker: "tampered" });
+  assert.equal(report.status, "unverified");
+  assert.equal(report.completed, "send");
+  assert.equal(env.fake.clicks().length, 3, "the send was not blocked by a composer-text comparison");
+  assert.deepEqual(env.fake.currentMessages(), [`${TEXT} tampered`]);
+  const posted = /** @type {{verified: boolean, postEvidence: boolean, verification: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, false);
+  assert.equal(posted?.postEvidence, true);
+  assert.equal(posted?.verification, "text_mismatch");
 });
 
 test("send mode refuses when the page leaves the destination before sending", async () => {
@@ -425,6 +445,20 @@ test("send mode refuses when the page leaves the destination before sending", as
   assert.equal(report.status, "refused");
   assert.ok(["changed_state", "destination_mismatch"].includes(report.refusal?.code ?? ""));
   assert.deepEqual(env.fake.currentMessages(), []);
+});
+
+test("a non-qa2 destination refuses before any click or typing", async () => {
+  const env = setup();
+  const report = await run(env, {
+    mode: "send",
+    destination: "qa2",
+    text: TEXT,
+    exactDestination: true,
+    decide: decideByLabel([/^random/]),
+  });
+  assert.equal(report.status, "refused");
+  assert.equal(report.refusal?.code, "destination_mismatch");
+  assertNoInput(env.fake);
 });
 
 test("send mode stops when no send control is selected", async () => {
@@ -455,8 +489,8 @@ test("send mode verifies the 2026-09-21 reproduction: the posted message renders
   // posted report as six separate accessibility nodes, so no single node
   // carried the exact full text and the post verification failed. The run
   // stayed unverified and no success record was written for 2026-09-21.
-  // The verification must read the paragraphs across the split nodes under
-  // the same strict paragraph-aware semantics as the composer read-back.
+  // The verifier reads paragraphs across the split nodes under strict
+  // paragraph-aware semantics and does not inspect composer contents.
   const env = setup({ splitMessages: true });
   const report = await run(env, { mode: "send", text: REPORT_TEXT });
   assert.equal(report.status, "executed");
@@ -580,7 +614,7 @@ const sendEmojiToSelfDm = (env, overrides = {}) =>
     ...overrides,
   });
 
-test("the exact qa2 report sends when a recognized Slack emoji's pre-send identity is unavailable", async () => {
+test("composer emoji identity is not checked before sending; posted emoji identity is verified", async () => {
   const env = setup({ ...treeShape(), splitMessages: true });
   const recognizedEmoji = env.fake.state.emojiAttributes;
   env.fake.state.emojiAttributes = (emoji, where) => {
@@ -604,22 +638,18 @@ test("the exact qa2 report sends when a recognized Slack emoji's pre-send identi
   assert.equal(env.fake.currentUrl(), TREE_QA2);
   assert.deepEqual(env.fake.currentMessages(), [EMOJI_REPORT]);
   assert.deepEqual(env.fake.state.sideEffects, []);
-  const composer = /** @type {{emojiIdentity?: string, emojiProofs?: Array<{line: number, offset: number, identity: string}>}|undefined} */ (
+  const composer = /** @type {Record<string, unknown>|undefined} */ (
     report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act")
   );
-  assert.equal(composer?.emojiIdentity, "unproven");
-  assert.deepEqual(composer?.emojiProofs, [
-    { line: 2, offset: 0, identity: "proven" },
-    { line: 3, offset: 0, identity: "unproven" },
-    { line: 4, offset: 0, identity: "proven" },
-    { line: 5, offset: 0, identity: "proven" },
-  ]);
+  assert.ok(composer);
+  assert.equal("emojiIdentity" in composer, false);
+  assert.equal("readBack" in composer, false);
   const posted = /** @type {{verified?: boolean, emojiIdentity?: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
   assert.equal(posted?.verified, true);
   assert.equal(posted?.emojiIdentity, "proven");
 });
 
-test("the five-line emoji report posts once to the exact self-DM: proven read-back, send-time check, and post verification", async () => {
+test("the five-line emoji report posts once to the exact self-DM and verifies the post", async () => {
   const page = selfDmPage();
   page.conversations.push({ id: "C0SAME", name: SELF_DM_NAME, kind: "channel" });
   const env = setup({ page, splitMessages: true });
@@ -629,8 +659,6 @@ test("the five-line emoji report posts once to the exact self-DM: proven read-ba
   assert.equal(env.fake.currentUrl(), SELF_DM_URL);
   assert.deepEqual(env.fake.currentMessages(), [EMOJI_REPORT]);
   assert.deepEqual(env.fake.state.sideEffects, []);
-  const composer = /** @type {{inlineReplacements: number}|undefined} */ (report.steps.find((s) => /** @type {{step: string, phase: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
-  assert.equal(composer?.inlineReplacements, 4);
   const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
   assert.equal(posted?.verified, true);
   assert.equal(env.fake.currentMessages()[0]?.split("\n").length, 5);
@@ -648,66 +676,80 @@ test("the five-line emoji report posts once to the qa2 channel on the real-shape
   assert.equal(report.status, "executed");
   assert.deepEqual(env.fake.currentMessages(), [EMOJI_REPORT]);
   assert.equal(env.fake.currentUrl(), TREE_QA2);
+  const posted = /** @type {{verified: boolean, composerCleared: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, true);
+  assert.equal(posted?.composerCleared, true);
 });
 
-test("the emoji report refuses before send when accessibility text alone is compared (the 2026-09-25 refusal)", async () => {
+test("a post mismatch is described by today's marked message, not by yesterday's report", async () => {
+  // Yesterday's report precedes today's in the channel and fails the
+  // comparison first with a contradicted emoji; today's post carries the
+  // run's title marker and only its text was altered by the page.
+  const env = setup({ ...treeShape(), splitMessages: true });
+  const yesterday = EMOJI_REPORT.replaceAll("9/24", "9/23").replace("👤", "📅");
+  env.fake.state.messages.set(new URL(TREE_QA2).pathname, [yesterday]);
+  env.fake.state.transformPosted = (draft) => draft.replace("1,234人（前日", "1,235人（前日");
+  const report = await run(env, { mode: "send", destination: "qa2", text: EMOJI_REPORT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: EMOJI_MARKERS });
+  assert.equal(report.status, "unverified");
+  assert.equal(report.completed, "send");
+  assert.equal(env.fake.clicks().length, 3);
+  assert.deepEqual(env.fake.currentMessages(), [yesterday, EMOJI_REPORT.replace("1,234人（前日", "1,235人（前日")]);
+  const posted = /** @type {{verified: boolean, postEvidence: boolean, composerCleared: boolean, emojiIdentity: string, verification: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, false);
+  assert.equal(posted?.postEvidence, true);
+  assert.equal(posted?.composerCleared, true);
+  assert.equal(posted?.verification, "text_mismatch");
+  assert.equal(posted?.emojiIdentity, "not_verified");
+});
+
+test("without post emoji proof, the message is sent once and reported unverified", async () => {
   const profile = { ...SLACK_PROFILE, name: "accessibility-only-test", inlineText: undefined, inlineEmoji: undefined, tokenizeInlineText: undefined };
   const env = setup({ page: selfDmPage(), splitMessages: true }, { profile });
   const report = await sendEmojiToSelfDm(env);
-  assert.equal(report.status, "refused");
-  assert.equal(report.refusal?.code, "text_mismatch");
-  assert.equal(report.refusal?.details.stage, "draft_readback");
-  assert.equal(report.refusal?.details.check, "ax_value_differs");
-  assert.equal(report.completed, "navigate");
-  assert.equal(env.fake.clicks().length, 2, "destination and composer focus only; no send click");
-  assert.deepEqual(env.fake.currentMessages(), []);
-  assert.equal(env.fake.currentDraft(), EMOJI_REPORT, "the unsent draft stays in the composer");
+  assert.equal(report.status, "unverified");
+  assert.equal(report.completed, "send");
+  assert.equal(env.fake.clicks().length, 3);
+  assert.deepEqual(env.fake.currentMessages(), [EMOJI_REPORT]);
+  assert.equal(env.fake.currentDraft(), "");
+  const posted = /** @type {{verified: boolean, postEvidence: boolean, verification: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, false);
+  assert.equal(posted?.postEvidence, true);
+  assert.equal(posted?.verification, "text_mismatch");
 });
 
-test("an emoji changed in the draft between typing and sending refuses before the send click", async () => {
+test("an emoji changed in the draft is sent once and caught by post verification", async () => {
   const env = setup({ page: selfDmPage(), splitMessages: true });
+  const changed = EMOJI_REPORT.replace("📅", "👤");
   const decide = decideByLabel(SELF_DM_FLOW, {
     onCall: (index) => {
-      if (index === 2) env.fake.state.drafts.set("/client/T0SYNTH/D0SELF", EMOJI_REPORT.replace("📅", "👤"));
+      if (index === 2) env.fake.state.drafts.set("/client/T0SYNTH/D0SELF", changed);
     },
   });
   const report = await sendEmojiToSelfDm(env, { decide });
-  assert.equal(report.status, "refused");
-  assert.equal(report.refusal?.code, "text_mismatch");
-  // The draft changed during the send decision, so the send click's own gate refuses.
-  assert.equal(report.refusal?.details.stage, "send_gate");
-  assert.equal(report.refusal?.details.check, "emoji_identity_contradicted");
-  assert.equal(report.completed, "draft");
-  assert.equal(env.fake.clicks().length, 2);
-  assert.deepEqual(env.fake.currentMessages(), []);
+  assert.equal(report.status, "unverified");
+  assert.equal(report.completed, "send");
+  assert.equal(env.fake.clicks().length, 3);
+  assert.deepEqual(env.fake.currentMessages(), [changed]);
+  const posted = /** @type {{verified: boolean, verification: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, false);
+  assert.equal(posted?.verification, "emoji_identity_contradicted");
 });
 
-test("an unrecognized inline image after a passing read-back refuses before send", async () => {
-  // The draft read back, then the composer contained an inline element that
-  // the profile could not classify. This must refuse before the send click.
+test("unrecognized composer markup does not add a pre-send structural refusal", async () => {
   const env = setup({ page: selfDmPage(), splitMessages: true });
-  const send = env.fake.session.send.bind(env.fake.session);
-  let inserted = false;
-  let treeReads = 0;
-  env.fake.session.send = async (method, params = {}) => {
-    const result = await send(method, params);
-    if (method === "Input.insertText") inserted = true;
-    if (inserted && method === "DOM.describeNode" && params.depth === -1 && ++treeReads === 1) {
-      env.fake.state.emojiAttributes = (emoji, where) => (where === "composer" ? { class: "unrecognized-inline", alt: "", src: "/static/blank.png" } : emojiImageAttributes(emoji, where));
-    }
-    return result;
-  };
+  env.fake.state.emojiAttributes = (emoji, where) => (where === "composer"
+    ? { class: "unrecognized-inline", alt: "", src: "/static/blank.png" }
+    : emojiImageAttributes(emoji, where));
   const report = await sendEmojiToSelfDm(env);
-  assert.equal(report.status, "refused");
-  assert.equal(report.refusal?.code, "text_mismatch");
-  assert.equal(report.refusal?.details.stage, "send_precheck");
-  assert.equal(report.refusal?.details.check, "unresolved_inline");
-  assert.equal(report.completed, "draft");
+  assert.equal(report.status, "executed");
+  assert.equal(report.completed, "send");
   const composerStep = /** @type {{verified?: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "composer" && /** @type {{phase: string}} */ (s).phase === "act"));
-  assert.equal(composerStep?.verified, true, "the read-back itself passed");
-  assert.equal(env.fake.clicks().length, 2, "destination and composer focus only; no send click");
-  assert.deepEqual(env.fake.currentMessages(), []);
-  assert.equal(env.fake.currentDraft(), EMOJI_REPORT, "the unsent draft stays in the composer");
+  assert.equal(composerStep?.verified, undefined);
+  assert.equal(env.fake.clicks().length, 3);
+  assert.deepEqual(env.fake.currentMessages(), [EMOJI_REPORT]);
+  assert.equal(env.fake.currentDraft(), "");
+  const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, true);
 });
 
 test("a posted emoji message rendered differently or unprovably stays unverified", async () => {
@@ -802,7 +844,7 @@ test("duplicateMarker refuses when the rendered destination contains the marker,
   draftOnly.fake.state.drafts.set("/client/T0SYNTH/C0QA2METRICS", `${TEXT} ${draftMarker}`);
   const draftRefusal = await run(draftOnly, { mode: "send", text: TEXT, duplicateMarker: draftMarker });
   assert.equal(draftRefusal.status, "refused");
-  assert.equal(draftRefusal.refusal?.code, "text_mismatch");
+  assert.equal(draftRefusal.refusal?.code, "composer_not_empty");
   assert.equal(draftOnly.fake.currentDraft(), `${TEXT} ${draftMarker}`, "the draft is not cleared or edited");
   const draftDuplicate = /** @type {{found:number}|undefined} */ (draftRefusal.steps.find((step) => /** @type {{step:string}} */ (step).step === "duplicate"));
   assert.equal(draftDuplicate?.found, 0, "duplicate lookup is scoped to posted message containers");

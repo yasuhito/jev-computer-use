@@ -38,6 +38,39 @@ test("FileRecordStore round-trips one record per date and reads nothing for an u
   }
 });
 
+test("a posted_unverified record persists scrubbed diagnostics and blocks future attempts", async () => {
+  const dir = await tempState();
+  try {
+    const store = new FileRecordStore(dir);
+    const record = {
+      date: "2026-09-20",
+      status: /** @type {const} */ ("posted_unverified"),
+      attemptedAt: "2026-09-21T01:00:00Z",
+      attempts: /** @type {const} */ (1),
+      recordedAt: "2026-09-21T01:01:00Z",
+      diagnostic: { emojiIdentity: "proven", verification: "text_mismatch" },
+    };
+    await store.write(record);
+    assert.deepEqual(await store.read("2026-09-20"), record);
+    assert.deepEqual(await readdir(join(dir, "records")), ["2026-09-20.json"]);
+    await store.write({ ...record, diagnostic: { emojiIdentity: "unproven", verification: "emoji_identity_unproven" } });
+    const updated = await store.read("2026-09-20");
+    assert.equal(updated?.status, "posted_unverified");
+    if (updated?.status === "posted_unverified") {
+      assert.deepEqual(updated.diagnostic, { emojiIdentity: "unproven", verification: "emoji_identity_unproven" });
+    }
+    for (const diagnostic of [
+      { emojiIdentity: "secret", verification: "text_mismatch" },
+      { emojiIdentity: "proven", verification: "not_found" },
+    ]) {
+      await writeFile(join(dir, "records", "2026-09-20.json"), JSON.stringify({ ...record, diagnostic }));
+      await assert.rejects(store.read("2026-09-20"), /unknown shape/);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("an attempted marker is durable and is replaced only by a verified posted record", async () => {
   const dir = await tempState();
   try {

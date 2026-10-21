@@ -228,6 +228,41 @@ test("the attempted marker is written at the callback, before a verified result"
   assert.equal(store.records.get(DATE)?.status, "posted");
 });
 
+test("a send mismatch records posted_unverified and blocks a second run", async () => {
+  const result = {
+    markAttempt: true,
+    code: 0,
+    payload: {
+      status: "unverified",
+      send: {
+        status: "unverified",
+        completed: "send",
+        steps: [{ step: "posted", verified: false, postEvidence: true, verification: "text_mismatch", emojiIdentity: "proven" }],
+      },
+    },
+  };
+  const { io, store, runReport } = baseIo({ results: [result] });
+  const first = await runDailyJob(io);
+  assert.equal(first.code, 1);
+  assert.equal(first.payload?.status, "posted_unverified");
+  assert.deepEqual(first.payload?.record, {
+    date: DATE,
+    status: "posted_unverified",
+    attemptedAt: new Date(NOW_MS).toISOString(),
+    attempts: 1,
+    recordedAt: new Date(NOW_MS).toISOString(),
+    diagnostic: { emojiIdentity: "proven", verification: "text_mismatch" },
+  });
+  assert.equal(store.records.get(DATE)?.status, "posted_unverified");
+  assert.deepEqual(first.payload?.attempts.map((note) => [note.completed, note.emojiIdentity, note.verification]), [
+    ["send", "proven", "text_mismatch"],
+  ]);
+  const second = await runDailyJob({ ...io, lock: fakeLock().lock });
+  assert.equal(second.code, 1);
+  assert.equal(second.payload?.status, "already-posted-unverified");
+  assert.equal(runReport.calls.length, 1);
+});
+
 test("pre-send failures leave no record and a later run may send once", async () => {
   for (const first of [
     { code: 1, payload: { status: "error", error: { code: "transport" } } },
@@ -254,6 +289,8 @@ test("post-click nonverified outcomes are uncertain and never resent", async () 
   /** @type {ScriptedResult[]} */
   const outcomes = [
     { code: 0, payload: { status: "unverified" } },
+    { code: 0, payload: { status: "unverified", send: { status: "unverified", completed: "send", steps: [{ step: "posted", verified: false, verification: "not_found" }] } } },
+    { code: 0, payload: { status: "unverified", send: { status: "unverified", completed: "send", steps: [{ step: "posted", verified: false, postEvidence: false, verification: "text_mismatch" }] } } },
     { code: 1, payload: { status: "error", error: { code: "transport" } } },
     { code: 0, payload: { status: "refused", send: { refusal: { code: "duplicate_post" } } } },
     { throw: new Error("post-click failure") },
@@ -401,41 +438,6 @@ test("the printed payload carries no report data, destination, message, or key",
   const text = JSON.stringify(payload);
   assert.doesNotMatch(text, /1234|qa2-metrics|idempotency|Live|new users/i);
   assert.ok(payload?.record);
-});
-
-test("a refused attempt keeps only closed-set stage and check labels, never refusal text", async () => {
-  const refused = (/** @type {Record<string, unknown>} */ details, /** @type {unknown} */ completed = "draft") => ({
-    code: 0,
-    payload: {
-      status: "refused",
-      message: "QA² 新規ユーザー｜9/20（UTC）\n👤 1,234人",
-      send: {
-        status: "refused",
-        completed,
-        refusal: { code: "text_mismatch", message: "qa2 へのメッセージ reads back differently", details },
-      },
-    },
-  });
-  const results = [
-    refused({ stage: "send_precheck", check: "ax_dom_disagree", readBack: "QA² 新規ユーザー｜9/20（UTC）\n\n 1,234人", reason: "the composer no longer holds the caller text" }),
-    refused({ stage: "QA² 1,234人", check: "1,234人 qa2" }, "somewhere"),
-    refused({ readBack: "1,234人" }, "navigate"),
-  ];
-  const expected = [
-    ["draft", "send_precheck", "ax_dom_disagree"],
-    [null, "other", "other"],
-    ["navigate", null, null],
-  ];
-  for (const [index, result] of results.entries()) {
-    const { io, store } = baseIo({ results: [result] });
-    const { code, payload } = await runDailyJob(io);
-    assert.equal(code, 1);
-    assert.equal(payload?.status, "failed");
-    assert.equal(payload?.record, null);
-    assert.equal(store.records.size, 0);
-    assert.deepEqual(payload?.attempts.map((a) => [a.completed, a.stage, a.check]), [expected[index]]);
-    assert.doesNotMatch(JSON.stringify(payload), /1,234|新規ユーザー|qa2|reads back|holds/);
-  }
 });
 
 test("usage errors exit 2 with a JSON error payload", async () => {

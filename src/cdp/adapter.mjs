@@ -55,10 +55,9 @@ import { parseUrl } from "../profiles/profile.mjs";
 
 /**
  * A caller-supplied check evaluated on the fresh re-observation inside the
- * execution gate, so workflow-level facts (the page is still at the chosen
- * destination, the composer still holds the text under the canonical
- * paragraph-aware comparison) are revalidated
- * immediately before dispatch. Returning a refusal aborts the action.
+ * execution gate, so workflow-level facts (such as the page still being at
+ * the chosen destination) are revalidated immediately before dispatch.
+ * Returning a refusal aborts the action.
  * @typedef {{ok: true} | {ok: false, code: import("../errors.mjs").RefusalCode, reason: string, details?: Record<string, unknown>}} Verdict
  * @typedef {(fresh: Snapshot) => Verdict | Promise<Verdict>} Precondition
  */
@@ -288,7 +287,7 @@ export function domText(root, resolve) {
  * explicit inline tokens; they are never removed before the structural
  * comparison.
  * @typedef {{kind: "text", text: string}|{kind: "emoji", identity: import("../profiles/profile.mjs").InlineEmojiIdentity}|{kind: "opaque"}} InlineDomToken
- * @typedef {{lines: InlineDomToken[][], plain: string, unresolved: number, inlineElements: number}} InlineDomContent
+ * @typedef {{lines: InlineDomToken[][], plain: string, unresolved: number}} InlineDomContent
  */
 
 /**
@@ -303,7 +302,6 @@ export function domInlineContent(root, classify) {
   /** @type {InlineDomToken[][]} */
   const lines = [[]];
   let unresolved = 0;
-  let inlineElements = 0;
   /** @returns {InlineDomToken[]} */
   const current = () => lines[lines.length - 1] ?? [];
   /** @param {string} value */
@@ -348,7 +346,6 @@ export function domInlineContent(root, classify) {
     }
     const identity = classify({ nodeName, attributes: Object.freeze(reduceAttributes(record)) });
     if (identity !== undefined) {
-      inlineElements += 1;
       if (hasText(record)) {
         unresolved += 1;
         current().push({ kind: "opaque" });
@@ -369,25 +366,24 @@ export function domInlineContent(root, classify) {
   };
   walkChildren(root);
   const plain = lines.map((line) => line.filter((token) => token.kind === "text").map((token) => token.kind === "text" ? token.text : "").join("")).join("\n");
-  return { lines, plain, unresolved, inlineElements };
+  return { lines, plain, unresolved };
 }
 
 /**
- * @typedef {{kind: "text", text: string}|{kind: "emoji", identity: import("../profiles/profile.mjs").InlineEmojiIdentity, source: "element"|"text"}} ComparedInlineToken
- * @typedef {{ok: boolean, emojiIdentity: "proven"|"unproven"|"contradicted"|"not_applicable"|"not_verified", emojiProofs: Array<{line: number, offset: number, identity: "proven"|"unproven"|"contradicted"}>}} InlineComparison
+ * @typedef {{kind: "text", text: string}|{kind: "emoji", identity: import("../profiles/profile.mjs").InlineEmojiIdentity}} ComparedInlineToken
+ * @typedef {{ok: boolean, emojiIdentity: "proven"|"unproven"|"contradicted"|"not_applicable"|"not_verified"}} InlineComparison
  */
 
 /**
- * Compare exact text and inline emoji slots line-by-line. Unknown identity is
- * accepted only when a recognized emoji occupies the exact intended token
- * position; contradictions are never accepted.
+ * Compare one posted message's exact text and inline emoji slots
+ * line-by-line. Emoji identity must be proven; unknown and contradictory
+ * identities never verify a post.
  * @param {InlineDomToken[][]} actualLines
  * @param {string[]} expectedLines
  * @param {(text: string) => import("../profiles/profile.mjs").InlineTextToken[]} tokenize
- * @param {boolean} allowUnknown
  * @returns {InlineComparison}
  */
-function compareInlineLines(actualLines, expectedLines, tokenize, allowUnknown) {
+function comparePostedInlineLines(actualLines, expectedLines, tokenize) {
   /** @type {ComparedInlineToken[][]} */
   const actual = actualLines.map((line) => {
     /** @type {ComparedInlineToken[]} */
@@ -396,10 +392,10 @@ function compareInlineLines(actualLines, expectedLines, tokenize, allowUnknown) 
       if (token.kind === "opaque") {
         out.push({ kind: "text", text: "\uFFFC" });
       } else if (token.kind === "emoji") {
-        out.push({ kind: "emoji", identity: token.identity, source: "element" });
+        out.push({ kind: "emoji", identity: token.identity });
       } else {
         for (const part of tokenize(token.text)) {
-          if (part.kind === "emoji") out.push({ kind: "emoji", identity: { status: "proven", text: part.text }, source: "text" });
+          if (part.kind === "emoji") out.push({ kind: "emoji", identity: { status: "proven", text: part.text } });
           else {
             const last = out.at(-1);
             if (last?.kind === "text") last.text += part.text;
@@ -412,8 +408,6 @@ function compareInlineLines(actualLines, expectedLines, tokenize, allowUnknown) 
   });
   const expected = expectedLines.map(tokenize);
   const expectedEmojiCount = expected.reduce((sum, line) => sum + line.filter((token) => token.kind === "emoji").length, 0);
-  /** @type {InlineComparison["emojiProofs"]} */
-  const emojiProofs = [];
   /** @type {InlineComparison["emojiIdentity"]} */
   let identity = expectedEmojiCount === 0 ? "not_applicable" : "proven";
   let ok = actual.length === expected.length;
@@ -422,41 +416,32 @@ function compareInlineLines(actualLines, expectedLines, tokenize, allowUnknown) 
     const actualLine = actual[lineIndex] ?? [];
     const expectedLine = expected[lineIndex] ?? [];
     const tokenCount = Math.max(actualLine.length, expectedLine.length);
-    let offset = 0;
     for (let tokenIndex = 0; tokenIndex < tokenCount; tokenIndex += 1) {
       const found = actualLine[tokenIndex];
       const wanted = expectedLine[tokenIndex];
       if (!found || !wanted || found.kind !== wanted.kind) {
         ok = false;
-        if (found?.kind === "emoji") emojiProofs.push({ line: lineIndex + 1, offset, identity: found.identity.status === "contradicted" ? "contradicted" : found.identity.status === "unknown" ? "unproven" : "proven" });
         continue;
       }
       if (wanted.kind === "text" && found.kind === "text") {
         if (found.text !== wanted.text) ok = false;
-        offset += wanted.text.length;
         continue;
       }
       if (wanted.kind === "emoji" && found.kind === "emoji") {
-        const expectedOffset = expectedLine.slice(0, tokenIndex).reduce((sum, part) => sum + part.text.length, 0);
-        let proof = "proven";
         if (found.identity.status === "contradicted" || (found.identity.status === "proven" && found.identity.text !== wanted.text)) {
-          proof = "contradicted";
           identity = "contradicted";
           ok = false;
         } else if (found.identity.status === "unknown") {
-          proof = "unproven";
           if (identity !== "contradicted") identity = "unproven";
-          if (!allowUnknown) ok = false;
+          ok = false;
         }
-        if (found.source === "element") emojiProofs.push({ line: lineIndex + 1, offset: expectedOffset, identity: /** @type {"proven"|"unproven"|"contradicted"} */ (proof) });
-        offset = expectedOffset + wanted.text.length;
       } else {
         ok = false;
       }
     }
   }
   if (!ok && identity === "proven") identity = "not_verified";
-  return { ok, emojiIdentity: identity, emojiProofs };
+  return { ok, emojiIdentity: identity };
 }
 
 /**
@@ -478,26 +463,6 @@ function normalizeUrl(url) {
 }
 
 /**
- * Why an editable does not hold the caller text, as a closed set that never
- * carries page text: `not_empty` (the editable held text before inserting),
- * `not_observable` (the editable left the page), `not_describable` (its DOM
- * could not be read), `unresolved_inline` (an element the profile cannot
- * prove), `ax_value_differs` (no proven element; the accessibility value
- * differs), `ax_dom_disagree` (the accessibility value disagrees with the DOM
- * text without the proven elements), `inline_text_differs` (the DOM text with
- * the proven elements differs). A `text_mismatch` refusal carries one as
- * `details.check`, beside `details.stage`, so an unattended run whose report
- * output is dropped can still say which check refused where. A known
- * contradictory emoji identity has its own `emoji_identity_contradicted`
- * label; opaque or unknown elements remain `unresolved_inline`.
- */
-export const EDITOR_CHECKS = Object.freeze(
-  new Set(["not_empty", "not_observable", "not_describable", "unresolved_inline", "ax_value_differs", "ax_dom_disagree", "inline_text_differs", "emoji_identity_contradicted"]),
-);
-
-/** @typedef {"not_empty"|"not_observable"|"not_describable"|"unresolved_inline"|"ax_value_differs"|"ax_dom_disagree"|"inline_text_differs"|"emoji_identity_contradicted"} EditorCheck */
-
-/**
  * Composer/editor emptiness classification. A visually empty rich-text
  * editor does not always report an exact "": Chromium reports the
  * accessibility value of a blank contenteditable as a single newline
@@ -514,18 +479,14 @@ export function editorValueIsEmpty(value) {
 }
 
 /**
- * The canonical paragraph-aware text equality for every safety comparison
- * against page-read text: the insertText read-back, the send-time composer
- * check, and the post-verification sequence match all compare through this
- * one helper and through paragraphLines.
+ * The canonical paragraph-aware text equality used when matching a
+ * page-rendered message, paired with paragraphLines.
  *
- * A rich-text editor lays each paragraph out as its own block, and the
- * browser's accessibility tree reads every block boundary as a blank line,
- * so text typed as "p1\np2" reads back as "p1\n\np2". Both strings are
- * therefore split on LF (U+000A), only the empty segments are dropped, and
+ * A rich-text message may expose paragraph boundaries as blank lines. The
+ * strings are split on LF (U+000A), only the empty segments are dropped, and
  * every remaining line must match exactly and in order. Nothing else is
  * normalized: spaces, tabs, NBSP, BOM, non-empty text, line order, and the
- * count of non-empty lines all matter. A null or undefined read never
+ * count of non-empty lines all matter. A null or undefined value never
  * equals.
  *
  * @param {string|null|undefined} actual
@@ -952,113 +913,17 @@ export class CdpAdapter {
   }
 
   /**
-   * Whether an editable holds exactly the text, for the insertText read-back
-   * and the send-time composer check. Read-only.
-   *
-   * When the profile supplies typed inline emoji hooks, compare the editable's
-   * exact text and emoji slots in DOM order, and require the accessibility
-   * value to match the DOM text with image characters omitted. Recognized
-   * emoji images with unknown identity may pass only at the intended token
-   * positions; unrecognized elements, changed text, or known contradictions
-   * refuse. Without the typed hooks, retain the profile's older strict
-   * inlineText resolver or accessibility-only paragraphEqual path.
-   *
-   * @param {number} backendNodeId
-   * @param {string|null} value the editable's accessibility value
-   * @param {string} text
-   * @returns {Promise<{ok: boolean, inlineReplacements: number, reason: string|null, check: EditorCheck|null, emojiIdentity?: "proven"|"unproven"|"contradicted"|"not_applicable"|"not_verified", emojiProofs?: Array<{line: number, offset: number, identity: "proven"|"unproven"|"contradicted"}>}>}
-   */
-  async editorHolds(backendNodeId, value, text) {
-    const classify = this.#profile.inlineEmoji;
-    const tokenize = this.#profile.tokenizeInlineText;
-    if (classify !== undefined && tokenize !== undefined) {
-      const described = await this.#describeTree(backendNodeId);
-      if (described === null) {
-        return { ok: false, inlineReplacements: 0, reason: "the editable's contents cannot be described", check: "not_describable", emojiIdentity: "not_verified", emojiProofs: [] };
-      }
-      const content = domInlineContent(described, classify);
-      const actualLines = content.lines.filter((line) => line.some((token) => token.kind !== "text" || token.text !== ""));
-      const comparison = compareInlineLines(actualLines, paragraphLines(text), tokenize, true);
-      const details = { emojiIdentity: comparison.emojiIdentity, emojiProofs: comparison.emojiProofs };
-      if (content.unresolved > 0) {
-        return { ok: false, inlineReplacements: content.inlineElements, reason: `${content.unresolved} inline element(s) in the editable are unrecognized or ambiguous`, check: "unresolved_inline", ...details };
-      }
-      if (!paragraphEqual(value, content.plain)) {
-        return { ok: false, inlineReplacements: content.inlineElements, reason: "the accessibility value disagrees with the editable's DOM text", check: "ax_dom_disagree", ...details };
-      }
-      if (!comparison.ok) {
-        const contradicted = comparison.emojiIdentity === "contradicted";
-        return {
-          ok: false,
-          inlineReplacements: content.inlineElements,
-          reason: contradicted ? "a known Slack emoji identity contradicts the intended emoji" : "the editable's exact text and inline emoji positions differ from the requested text",
-          check: contradicted ? "emoji_identity_contradicted" : "inline_text_differs",
-          ...details,
-        };
-      }
-      return { ok: true, inlineReplacements: content.inlineElements, reason: null, check: null, ...details };
-    }
-    const resolve = this.#profile.inlineText;
-    if (resolve === undefined) {
-      const ok = paragraphEqual(value, text);
-      return { ok, inlineReplacements: 0, reason: ok ? null : "the accessibility value differs from the text", check: ok ? null : "ax_value_differs", emojiIdentity: "not_applicable", emojiProofs: [] };
-    }
-    const described = await this.#describeTree(backendNodeId);
-    if (described === null) {
-      return { ok: false, inlineReplacements: 0, reason: "the editable's contents cannot be described", check: "not_describable", emojiIdentity: "not_applicable", emojiProofs: [] };
-    }
-    const dom = domText(described, resolve);
-    if (dom.unresolved > 0) {
-      return {
-        ok: false,
-        inlineReplacements: dom.replaced,
-        reason: `${dom.unresolved} element(s) in the editable have no provable text`,
-        check: "unresolved_inline",
-        emojiIdentity: "not_applicable",
-        emojiProofs: [],
-      };
-    }
-    if (dom.replaced === 0) {
-      const ok = paragraphEqual(value, text);
-      return { ok, inlineReplacements: 0, reason: ok ? null : "the accessibility value differs from the text", check: ok ? null : "ax_value_differs", emojiIdentity: "not_applicable", emojiProofs: [] };
-    }
-    if (!paragraphEqual(value, dom.plain)) {
-      return {
-        ok: false,
-        inlineReplacements: dom.replaced,
-        reason: "the accessibility value disagrees with the editable's DOM text",
-        check: "ax_dom_disagree",
-        emojiIdentity: "not_applicable",
-        emojiProofs: [],
-      };
-    }
-    const ok = paragraphEqual(dom.text, text);
-    return {
-      ok,
-      inlineReplacements: dom.replaced,
-      reason: ok ? null : "the editable's text with proven inline elements differs from the text",
-      check: ok ? null : "inline_text_differs",
-      emojiIdentity: "not_applicable",
-      emojiProofs: [],
-    };
-  }
-
-  /**
-   * Focus a decided editable candidate with one click and insert exact text,
-   * then read the value back and require it to equal the text under the
-   * canonical paragraph-aware comparison (editorHolds, built on
-   * paragraphEqual): only blank-line paragraph-boundary differences are
-   * tolerated, every non-empty line must match exactly and in order, and an
-   * inline element counts only as the text the profile proves it stands for.
-   * The editable must be empty beforehand: an absent value, an empty string,
-   * or Chromium's exact single-U+000A blank-editor artifact counts as empty;
-   * every other value refuses.
+   * Focus a decided editable candidate with one click and insert the caller's
+   * exact text using `Input.insertText`. Before the click, the fresh composer
+   * value must be absent, empty, or Chromium's exact single-newline blank
+   * editor artifact; every other value refuses without clearing the draft.
+   * The inserted text is not compared with the caller text before sending.
    *
    * @param {Snapshot} snapshot
    * @param {string} candidateId
    * @param {string} text
    * @param {{require?: Precondition|null}} [options]
-   * @returns {Promise<{action: "insertText", candidateId: string, backendNodeId: number, point: {x: number, y: number}, textLength: number, readBack: string|null, inlineReplacements: number, verified: true, emojiIdentity?: string, emojiProofs?: Array<{line: number, offset: number, identity: string}>}>}
+   * @returns {Promise<{action: "insertText", candidateId: string, backendNodeId: number, point: {x: number, y: number}, textLength: number}>}
    */
   async insertText(snapshot, candidateId, text, { require = null } = {}) {
     const { fresh, candidate } = await this.#gate(snapshot, candidateId, "insertText", require);
@@ -1067,59 +932,17 @@ export class CdpAdapter {
       throw new RefusalError("unsupported_action", focusAllowed.reason ?? "focus click not allowed");
     }
     if (!editorValueIsEmpty(candidate.value)) {
-      throw new RefusalError("text_mismatch", `${candidate.label} already contains text; refusing to append`, {
-        readBack: candidate.value,
-        stage: "draft_precheck",
-        check: "not_empty",
-      });
+      throw new RefusalError("composer_not_empty", "composer already contains a draft; refusing to append");
     }
     const point = await this.#locate(candidate);
     await this.#leftClick(point);
     await this.#send("Input.insertText", { text }, "execute");
-    const started = this.#now();
-    /** @type {string|null} */
-    let readBack;
-    /** @type {number} */
-    let inlineReplacements;
-    /** @type {string|undefined} */
-    let emojiIdentity;
-    /** @type {Array<{line: number, offset: number, identity: "proven"|"unproven"|"contradicted"}>|undefined} */
-    let emojiProofs;
-    for (;;) {
-      const after = await this.observe();
-      const current = after.candidates.find((c) => c.backendNodeId === candidate.backendNodeId);
-      readBack = current ? current.value : null;
-      const check = current
-        ? await this.editorHolds(current.backendNodeId, readBack, text)
-        : { ok: false, inlineReplacements: 0, reason: "the editable is no longer observable", check: "not_observable", emojiIdentity: "not_verified", emojiProofs: [] };
-      inlineReplacements = check.inlineReplacements;
-      emojiIdentity = check.emojiIdentity;
-      emojiProofs = check.emojiProofs;
-      if (check.ok) break;
-      if (this.#now() - started >= this.#settleMs) {
-        throw new RefusalError("text_mismatch", `${candidate.label} reads back differently from the requested text`, {
-          readBack,
-          expectedLength: text.length,
-          reason: check.reason,
-          stage: "draft_readback",
-          check: check.check,
-          ...(check.emojiIdentity !== undefined ? { emojiIdentity: check.emojiIdentity } : {}),
-          ...(check.emojiProofs !== undefined ? { emojiProofs: check.emojiProofs } : {}),
-        });
-      }
-      await this.#sleep(this.#settlePollMs);
-    }
     return {
       action: "insertText",
       candidateId,
       backendNodeId: candidate.backendNodeId,
       point,
       textLength: text.length,
-      readBack,
-      inlineReplacements,
-      verified: true,
-      ...(emojiIdentity !== undefined ? { emojiIdentity } : {}),
-      ...(emojiProofs !== undefined ? { emojiProofs } : {}),
     };
   }
 
@@ -1155,7 +978,9 @@ export class CdpAdapter {
    * windows that contain it, never its whole container.
    * For expected emoji, a profile with typed inline hooks validates the DOM
    * sequence even when accessibility text matches, so post verification
-   * requires proven identities at exact positions. `scope: "messages"`
+   * requires proven identities at exact positions. `containers` restricts
+   * `sequence` to the profile-declared containers with those backend node
+   * ids, so a diagnostic describes only those messages. `scope: "messages"`
    * restricts containment checks to profile-declared message containers,
    * never composer text.
    *
@@ -1163,10 +988,10 @@ export class CdpAdapter {
    * duplicate-marker guard uses it only within message containers.
    *
    * @param {string} text
-   * @param {{match?: "exact"|"contains"|"sequence", scope?: "all"|"messages"}} [options]
+   * @param {{match?: "exact"|"contains"|"sequence", scope?: "all"|"messages", containers?: number[]|null}} [options]
    * @returns {Promise<{count: number, backendNodeIds: number[], emojiIdentity?: "proven"|"unproven"|"contradicted"|"not_applicable"|"not_verified", verification?: string}>}
    */
-  async findText(text, { match = "exact", scope = "all" } = {}) {
+  async findText(text, { match = "exact", scope = "all", containers = null } = {}) {
     await this.#ensureEnabled();
     const wanted = sanitizeLabel(text, MAX_VALUE_LENGTH);
     if (wanted.length === 0) return { count: 0, backendNodeIds: [] };
@@ -1259,7 +1084,9 @@ export class CdpAdapter {
         return lines;
       };
       const containerRoles = this.#profile.textSequenceContainerRoles ?? new Set();
-      const candidates = raws
+      const within = containers === null ? null : new Set(containers);
+      const scoped = within === null ? raws : raws.filter((raw) => within.has(raw?.backendDOMNodeId));
+      const candidates = scoped
         .filter((raw) => containerRoles.has(typeof raw?.role?.value === "string" ? raw.role.value.toLowerCase() : ""))
         .map((raw) => subtreeLines(raw));
       /** @type {Set<number>} */
@@ -1281,7 +1108,7 @@ export class CdpAdapter {
         // Even an accessibility-tree match cannot establish an image's Slack
         // identity. Validate the message DOM whenever this profile has typed
         // inline semantics, whether or not the AX sequence matched.
-        const result = await this.#sequenceInInlineContent(raws, byId, containerRoles, expected, classify, tokenizer);
+        const result = await this.#sequenceInInlineContent(scoped, byId, containerRoles, expected, classify, tokenizer);
         return { count: result.backendNodeIds.length, backendNodeIds: result.backendNodeIds, emojiIdentity: result.emojiIdentity, verification: result.verification };
       }
       if (backendNodeIds.length > 0) {
@@ -1289,7 +1116,7 @@ export class CdpAdapter {
       }
       const resolve = this.#profile.inlineText;
       if (resolve !== undefined && !text.includes(UNRESOLVED_INLINE)) {
-        for (const id of await this.#sequenceInProvenInlineText(raws, byId, containerRoles, expected, resolve)) hit.add(id);
+        for (const id of await this.#sequenceInProvenInlineText(scoped, byId, containerRoles, expected, resolve)) hit.add(id);
       }
       const fallbackIds = [...hit];
       return { count: fallbackIds.length, backendNodeIds: fallbackIds, emojiIdentity: expectedHasEmoji ? (fallbackIds.length > 0 ? "proven" : "not_verified") : "not_applicable", verification: fallbackIds.length > 0 ? "verified" : "not_found" };
@@ -1345,7 +1172,7 @@ export class CdpAdapter {
       const dom = domInlineContent(described, classify);
       const actualLines = dom.lines.filter((line) => line.some((token) => token.kind !== "text" || token.text !== ""));
       for (let start = 0; start + expected.length <= actualLines.length; start += 1) {
-        const comparison = compareInlineLines(actualLines.slice(start, start + expected.length), expected, tokenize, false);
+        const comparison = comparePostedInlineLines(actualLines.slice(start, start + expected.length), expected, tokenize);
         if (comparison.emojiIdentity === "contradicted") outcome = "contradicted";
         else if (comparison.emojiIdentity === "unproven" && outcome !== "contradicted") outcome = "unproven";
         if (!comparison.ok) {

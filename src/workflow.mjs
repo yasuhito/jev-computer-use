@@ -4,16 +4,16 @@
  * only on explicit request. Every semantic selection (which destination,
  * which composer, which send control) is one TypeSafe Jev Choice through the
  * existing decision core; every permission, threshold, freshness bound,
- * identity binding, exact-text comparison, and the decision to act at all is
- * deterministic code in this module and in CdpAdapter.
+ * identity binding, composer emptiness, post-text verification, and the
+ * decision to act at all are deterministic code in this module and CdpAdapter.
  *
  * Modes, in increasing authority:
  *   observe   snapshot only, no model call, no action
  *   dry-run   decisions only, no action (default)
  *   navigate  click the destination (unless the page is already exactly
  *             there) and verify the URL
- *   draft     navigate, then insert the text and verify the read-back
- *   send      draft, then click send and verify the message appeared
+ *   draft     navigate, refuse a non-empty composer, then insert the text
+ *   send      draft, click send, then verify the posted text and emoji identity
  */
 import { validateRequest, ValidationError, isPlainObject } from "./validate.mjs";
 import { buildRequest, runDecision } from "./decide.mjs";
@@ -186,43 +186,6 @@ function atDestination(snapshot, destinationUrl) {
     code: "destination_mismatch",
     reason: `page is at ${snapshot.target.url}, not at the selected destination ${destinationUrl}`,
   };
-}
-
-/**
- * The send-time composer check compares through the same canonical
- * paragraph-aware equality as the insertText read-back (CdpAdapter
- * editorHolds, built on paragraphEqual): the page's accessibility tree may
- * read every paragraph boundary as a blank line, so only blank-line
- * differences are tolerated and every non-empty text token must match in
- * order. Recognized inline emoji images may have unknown identity only when
- * their positions match the caller's exact emoji tokens; unknown elements and
- * known contradictions refuse. Post-send verification requires proven emoji
- * identity. A refusal names where it happened (`stage`: the check before the
- * send decision or the one inside the send click's gate) and which check
- * refused (`check`, from EDITOR_CHECKS).
- *
- * @param {CdpAdapter} adapter
- * @param {Snapshot} snapshot
- * @param {number} composerBackendNodeId
- * @param {string} text
- * @param {"send_precheck"|"send_gate"} stage
- * @returns {Promise<{ok: true} | {ok: false, code: "text_mismatch", reason: string, details: {stage: string, check: string|null}}>}
- */
-async function composerHolds(adapter, snapshot, composerBackendNodeId, text, stage) {
-  const composer = snapshot.candidates.find((c) => c.backendNodeId === composerBackendNodeId);
-  if (!composer) {
-    return { ok: false, code: "text_mismatch", reason: "the composer is no longer observable", details: { stage, check: "not_observable" } };
-  }
-  const check = await adapter.editorHolds(composer.backendNodeId, composer.value, text);
-  if (!check.ok) {
-    return {
-      ok: false,
-      code: "text_mismatch",
-      reason: `the composer no longer holds the caller text: ${check.reason}`,
-      details: { stage, check: check.check },
-    };
-  }
-  return { ok: true };
 }
 
 /**
@@ -480,53 +443,65 @@ export async function runWorkflow({
     const beforeSend = await adapter.observe();
     const stillThere = atDestination(beforeSend, destinationUrl);
     if (!stillThere.ok) throw new RefusalError(stillThere.code, stillThere.reason);
-    const holds = await composerHolds(adapter, beforeSend, composer.backendNodeId, text, "send_precheck");
-    if (!holds.ok) throw new RefusalError(holds.code, holds.reason, holds.details);
     const sends = beforeSend.candidates.filter((c) => c.kind === "send");
     const sendControl = await decideStep(
       "send",
-      `Find the control that submits the drafted message to the conversation "${chosenDestination.name}".`,
-      `${pageContext(beforeSend)}; the composer holds the drafted message`,
+      `Find the control that submits the inserted message to the conversation "${chosenDestination.name}".`,
+      `${pageContext(beforeSend)}; the page is at the selected destination`,
       sends,
     );
     if (!sendControl) return report;
     assertAllowed(sendControl, "click", beforeSend);
     const sent = await adapter.click(beforeSend, sendControl.id, {
-      require: async (fresh) => {
-        const here = atDestination(fresh, destinationUrl);
-        if (!here.ok) return here;
-        return composerHolds(adapter, fresh, composer.backendNodeId, text, "send_gate");
-      },
+      require: (fresh) => atDestination(fresh, destinationUrl),
       beforeClick: onBeforeSend,
     });
     report.steps.push({ step: "send", phase: "act", ...sent });
     report.completed = "send";
 
     // ---- verify the post ----
-    const postCheck = /** @type {{value: {count: number, emojiIdentity?: string, verification?: string}|null}} */ ({ value: null });
+    const postCheck = /** @type {{value: {count: number, backendNodeIds: number[], emojiIdentity?: string, verification?: string}|null}} */ ({ value: null });
+    let composerCleared = false;
     const posted = await adapter.waitFor(async (snapshot) => {
       if (!urlReached(snapshot.target.url, destinationUrl)) return false;
       const composerNow = snapshot.candidates.find((c) => c.backendNodeId === composer.backendNodeId);
       // The same emptiness classification as insertText's precheck: a page
       // whose cleared composer keeps the exact single-U+000A blank editor
       // artifact counts as empty; every other nonempty value is a draft.
-      if (!composerNow || !editorValueIsEmpty(composerNow.value)) return false;
-      // Verify exact paragraph order in one profile-declared message
-      // container. Emoji images must have a matching identity at every
-      // expected position, then be followed by exposed text read-back.
+      // Emptiness is observed, never compared with the caller text, and does
+      // not gate the post verification.
+      composerCleared = composerNow !== undefined && editorValueIsEmpty(composerNow.value);
+      // Require exact paragraph order in one profile-declared message
+      // container, with proven emoji identities and exposed non-emoji text.
       postCheck.value = await adapter.findText(text, { match: "sequence" });
       return postCheck.value.count > 0 && postCheck.value.verification === "verified";
     });
+    // A failed verification is described only by the message containers that
+    // hold this run's duplicate marker, never by an older message.
+    let evidence = posted.ok ? postCheck.value : null;
+    if (evidence === null) {
+      for (const marker of duplicateMarkers) {
+        const markerMatch = await adapter.findText(marker, { match: "contains", scope: "messages" });
+        if (markerMatch.count > 0) {
+          evidence = await adapter.findText(text, { match: "sequence", containers: markerMatch.backendNodeIds });
+          break;
+        }
+      }
+    }
+    const verified = evidence !== null && evidence.count > 0 && evidence.verification === "verified";
+    const verification = evidence?.verification ?? "not_found";
     report.steps.push({
       step: "posted",
       phase: "verify",
-      verified: posted.ok,
+      verified,
+      postEvidence: evidence !== null,
+      composerCleared,
       url: posted.snapshot.target.url,
-      count: postCheck.value?.count ?? 0,
-      emojiIdentity: postCheck.value?.emojiIdentity ?? "not_verified",
-      verification: postCheck.value?.verification ?? "not_found",
+      count: evidence?.count ?? 0,
+      emojiIdentity: evidence?.emojiIdentity ?? "not_verified",
+      verification: evidence !== null && verification === "not_found" ? "text_mismatch" : verification,
     });
-    report.status = posted.ok ? "executed" : "unverified";
+    report.status = verified ? "executed" : "unverified";
     return report;
   } catch (err) {
     if (err instanceof RefusalError) {

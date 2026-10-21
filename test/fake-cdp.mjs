@@ -6,11 +6,10 @@
  * navigates, composer click focuses, insertText appends to the focused
  * textbox, send posts).
  *
- * Like the real client, the page turns the Unicode emoji of
- * SYNTHETIC_EMOJI into images: the composer's accessibility value and text
- * lack them, and `DOM.describeNode` with a depth describes the composer as
- * one `<p>` per line and a posted message as a rich-text section with `<br>`
- * line breaks, both holding the emoji `<img>` elements.
+ * Like the real client, the page turns Unicode emoji into images, which
+ * Chromium omits from the composer's accessibility value. The synthetic DOM
+ * keeps both composer and posted inline shapes, while workflow verification
+ * inspects only posted-message content with `DOM.describeNode`.
  */
 import { TransportError, CdpProtocolError } from "../src/errors.mjs";
 import { loadSyntheticPage, buildElements, emojiSegments, emojiImageAttributes, withoutEmoji } from "./fixtures/synthetic-slack.mjs";
@@ -26,8 +25,8 @@ export const TEXT_CHILD_OFFSET = 10_000;
  * The AX representation the synthetic page reports for editor content: the
  * blank-editor artifact (a single U+000A value on a visually empty
  * composer) is passed through untouched, and any other paragraph-bearing
- * string reads every LF as a blank line (double LF), the way the real
- * client's editor is rendered and read back.
+ * string is exposed with every LF as a blank line (double LF), matching the
+ * real client's editor representation.
  *
  * @param {string} s
  */

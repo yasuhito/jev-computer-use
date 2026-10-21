@@ -239,55 +239,49 @@ profile already recognized, followed by deterministic validation in code.
   Before typing it additionally requires the page to be at the selected
   destination and the composer to be empty (an absent value, `""`, or exactly
   one newline U+000A counts as empty because Chromium reports that newline for
-  the visually blank contenteditable composer; every other value refuses);
-  before sending, the page must still be at the destination and the composer
-  must still hold the text under the same paragraph-aware comparison.
-- **Exact text, read back, paragraph-aware.** The text is inserted with
-  `Input.insertText` (never key events) and read back from the page;
-  any difference is `text_mismatch`. One canonical comparison
-  (`paragraphEqual`/`paragraphLines` in `src/cdp/adapter.mjs`) serves the
-  read-back, the send-time composer check, and the post verification: both
-  strings are split on LF (U+000A), only the empty segments are dropped, and
-  every remaining line must match exactly and in order. Only blank-line
-  differences are tolerated, because a rich-text editor renders each
-  paragraph as its own block and the browser's accessibility tree reads every
-  block boundary as a blank line.
-  Spaces, tabs, NBSP, BOM, non-empty text, line order, and the count of
-  non-empty lines are never normalized. Composer emptiness still uses only
-  the three representations above, and the duplicate-marker containment check
-  is unchanged. After sending, the workflow waits for the composer to be
-  empty again (same classification) and the text to appear on the page; the
-  post verification compares the text's non-empty lines against the page's
-  rendered non-empty lines in accessibility-tree order and requires them as
-  one contiguous sequence within a single message container (`findText`
-  `match: "sequence"`), because the real client renders each paragraph of the posted message as its own
-  accessibility node and no single node carries the joined text. A missing,
-  reordered, altered, or interleaved non-empty line never verifies; unnamed
-  container nodes and unrelated rendered content around the message never
-  break the run; otherwise the status is `unverified`.
-- **Emoji images, proven, never dropped.** Slack replaces a Unicode emoji in
-  the composer and in a posted message with an `<img>`, and Chromium never
-  reads image-backed emoji out of the editable's accessibility value, so the
-  QA² report's accessibility-only read-back lacked its emoji characters
-  (reproduced 2026-09-25). The profile now supplies an exact text tokenizer and
-  a typed inline-emoji classifier; the adapter reads the editable's DOM
-  subtree with `DOM.describeNode` (already allowed; no new CDP method) and
-  compares text and emoji slots in order, with `paragraphEqual` preserving the
-  canonical paragraph rules. Only the Slack profile recognizes the observed
-  `<img class="emoji">` composer and `<img class="c-emoji__img">` posted
-  shapes. An unrecognized inline element, missing/extra/moved emoji slot, text
-  change, or positively contradictory identity refuses before the send click.
-  A recognized Slack emoji image with unknown identity can pass the composer
-  check only when the exact emoji-token count and positions match and the
-  accessibility value matches all non-emoji text; the read-back reports that
-  identity as `unproven`. After sending, a match must be one exact contiguous
-  run inside a profile-declared message container, each emoji identity must
-  be proven, and the non-emoji text must also be exposed by the accessibility
-  tree. Missing or unproven post evidence leaves the outcome `unverified`.
-  Locale-specific spoken or localized `alt` values are ignored only beside
-  stable serialized identity fields observed on the ja-JP client. The closed
-  report emoji set is `:bust_in_silhouette:` 👤, `:scales:` ⚖️, `:date:` 📅,
-  and `:chart_with_upwards_trend:` 📈; a known contradictory shortcode or
+  the visually blank contenteditable composer; every other value refuses
+  without clearing the draft). The composer identity and destination are
+  re-observed before insertion. After `Input.insertText`, the workflow does
+  not compare composer text, emoji, or markup to the caller's text before
+  sending. Slack may transform input; that risk is detected only by
+  post-send verification. The send action still revalidates the selected
+  destination and send control before clicking.
+- **Post text verification, paragraph-aware.** The caller's exact text is
+  inserted with `Input.insertText` (never key events), without comparing
+  composer text or emoji to the caller text before sending. After the click,
+  one canonical comparison (`paragraphEqual`/`paragraphLines` in
+  `src/cdp/adapter.mjs`)
+  verifies the posted text: both strings are split on LF (U+000A), only the
+  empty segments are dropped, and every remaining line must match exactly
+  and in order. Only blank-line differences are tolerated, because a
+  rich-text editor renders each paragraph as its own block and the browser's
+  accessibility tree reads every block boundary as a blank line. Spaces,
+  tabs, NBSP, BOM, non-empty text, line order, and the count of non-empty
+  lines are never normalized. Composer emptiness before insertion still uses
+  only the three representations above; the duplicate-marker containment
+  check is unchanged. After sending, the workflow waits for posted text and
+  compares its non-empty lines against the page's rendered lines in
+  accessibility-tree order. They must form one contiguous sequence within a
+  single message container (`findText` `match: "sequence"`), because the real
+  client renders each paragraph as its own accessibility node. Missing,
+  reordered, altered, or interleaved non-empty lines never verify; unnamed
+  container nodes and unrelated rendered content do not break the run. A
+  failed post verification leaves the outcome `unverified`.
+- **Posted emoji identity.** Slack may render Unicode emoji in a posted
+  message as `<img>` elements whose identity is missing from Chromium's
+  accessibility text. The profile supplies an exact text tokenizer and typed
+  inline-emoji classifier; post verification inspects the message's DOM with
+  the already-allowed `DOM.describeNode` method. Only the Slack profile
+  recognizes the observed `<img class="c-emoji__img">` posted shape. A match
+  must be one exact contiguous run inside a profile-declared message
+  container, every emoji identity must be proven, and non-emoji text must be
+  exposed by the accessibility tree. Missing, unproven, or contradictory
+  emoji identity, or altered text, leaves the sent message `unverified`; it is
+  not deleted or resent automatically. Locale-specific spoken or localized
+  `alt` values are ignored only beside stable serialized identity fields
+  observed on the ja-JP client. The closed report emoji set is
+  `:bust_in_silhouette:` 👤, `:scales:` ⚖️, `:date:` 📅, and
+  `:chart_with_upwards_trend:` 📈; a known contradictory shortcode or
   emoji-character `alt` is not treated as an unknown placeholder.
 - **Caller delivery guards.** A caller may pass two extra
   deterministic guards: `exactDestination` refuses (`destination_mismatch`)
@@ -316,8 +310,8 @@ profile already recognized, followed by deterministic validation in code.
 | `observe` | none | none; prints the recognized candidates |
 | `dry-run` (default) | destination; composer and send if visible | none; prints the plan and whether it would be executable |
 | `navigate` | destination | one click on the destination, URL verified; no click when the page URL already equals the destination's exactly |
-| `draft` | destination, composer | navigate, then one focus click and one `insertText`, read-back verified; never sends |
-| `send` | destination, composer, send | draft, then one click on the send control, post verified |
+| `draft` | destination, composer | navigate, refuse a non-empty composer without clearing it, then one focus click and one `insertText`; never sends |
+| `send` | destination, composer, send | draft, then one click on the send control; verify posted text and emoji identity, otherwise report `unverified` |
 
 The default confidence threshold is 0.8 (higher than `jev-cu`'s 0.5 because
 acting is higher-stakes than reporting); it applies in every mode so a dry-run
@@ -367,7 +361,18 @@ One JSON object per run. `status` is one of `observed`, `selected` (dry-run),
 `completed` names the last workflow stage completed (`navigate`, `draft`, `send`,
 or null). `steps` lists every decision (`phase: "decide"`, with the Jev choice,
 confidence, and probabilities), every action (`phase: "act"`, with the click
-point, URLs, and read-back), the post verification, and in dry-run a `plan`.
+point, URLs, and inserted text length), the post verification, and in dry-run a
+`plan`. The `posted` step's `postEvidence` is true when text verification
+succeeds or, after an unverified send, a caller-supplied duplicate marker is
+visible in a posted-message container. After an unverified send, its
+`count`, `emojiIdentity`, and `verification` describe only the posted-message
+containers holding that marker, never an older message; without a visible
+marker they are `0`, `not_verified`, and `not_found`. `composerCleared` reports
+whether the composer was observed empty after the send; it never gates post
+verification, so a verified post with a retained draft is `executed` with
+`composerCleared: false`. `jev-cu-daily` uses that evidence to
+record visible mismatches as `posted_unverified` while leaving an unlocated
+post as `uncertain`.
 When the page was already exactly at the destination, the destination step is
 `phase: "verify"` with `alreadyAtDestination: true` instead of a click (the
 selected row can sit under a popover, where the hit test rightly refuses).
@@ -384,13 +389,9 @@ selected row can sit under a popover, where the hit test rightly refuses).
 | `stale_snapshot` / `stale_target` | the decision is older than 20 s, or the session's target changed |
 | `changed_state` | URL, candidate set, or the selected element changed before acting |
 | `not_actionable` | the element is disabled or has no clickable box in the viewport |
-| `text_mismatch` | the composer is not absent, empty, or exactly one newline, or the read-back differs from the caller text beyond paragraph blank-line differences, or holds an element (an emoji image) whose text the profile cannot prove |
+| `composer_not_empty` | the active composer already contains a draft; the workflow refuses without clearing it |
 | `destination_mismatch` | the page is not at the selected destination, or (with `exactDestination`) the chosen link does not name the requested destination exactly |
 | `duplicate_post` | (with `duplicateMarker`) the destination already shows content carrying any marker |
-
-A `text_mismatch` refusal's `refusal.details` also names where it happened
-(`stage`) and which composer check refused (`check`); the values are listed
-under `jev-cu-daily` Output.
 
 Exit codes: `0` for every workflow outcome including `refused` and
 `unverified`; `1` for runtime errors (`error.code` is `api`, `transport`, or
@@ -425,27 +426,28 @@ rows the profile must skip, and a composer and send button that only Slack's
 `data-qa` hooks identify). Observing the `tree` shape through a real Chromium
 must yield exactly the three channel rows, the composer, and the send button.
 The fake CDP also models Slack's paragraph representation: the editor renders
-each paragraph as its own block and Chromium reads every block boundary as a
-blank line, so text typed as `p1\np2` reads back as `p1\n\np2` (a single
-U+000A blank-editor artifact is passed through untouched). Posted messages can
-be modeled in the same joined form (the default) or as the real client
+each paragraph as its own block and Chromium reports every block boundary as a
+blank line. The single U+000A blank-editor artifact is accepted as empty by the
+pre-insertion guard. Posted messages can be modeled in the same joined form
+(the default) or as the real client
 renders them in the message list, one element per paragraph
 (`splitMessages`), which is what the post verification's paragraph-sequence
-comparison handles. The safety comparisons are paragraph-aware for exactly
-this reason. Both the fake and the served page also turn the emoji of
+comparison handles. Post verification is paragraph-aware for exactly this
+reason. Both the fake and the served page also turn the emoji of
 `SYNTHETIC_EMOJI` into images the way Slack does (a spoken ja-JP `alt` image
 with `data-id`/`data-stringify-text` in the composer, a `data-stringify-emoji`
 image with the ja-JP localized `alt` in a posted rich-text section), so the
-composer's accessibility value lacks them. Recognized report emoji images
-may pass pre-send only at the exact intended positions; post-send verification
-requires proven identity. Unrecognized inline elements refuse.
+composer's accessibility value lacks them. Composer emoji identity is not a
+pre-send gate; post-send verification requires proven identity. A posted
+message whose text or emoji identity differs is reported unverified.
 
 `test/browser-e2e.test.mjs` runs the send workflow against the served
 `tree` page with the self-DM in a real headless Chromium (localhost only,
-offline label decisions) and checks the 2026-09-25 refusal with
+offline label decisions) and checks unverified post handling with
 accessibility text alone, the proven send and post verification, the rendered
-five-line layout, the duplicate rerun, and refusal before the send click of
-a composer emoji whose typed shortcode pair is spoofed. It is skipped unless
+five-line layout, the duplicate rerun, and that spoofed composer emoji
+metadata does not block sending while post identity is still verified. It is
+skipped unless
 `JEV_CU_E2E_CHROME` names a Chromium binary (Node 22+):
 `JEV_CU_E2E_CHROME=$(command -v chromium) node --test test/browser-e2e.test.mjs`.
 
@@ -609,7 +611,7 @@ the environment). The destination must equal one `--allow-destination`
 character for character; the workflow then additionally requires the chosen
 sidebar link to name it exactly, refuses if a currently rendered
 posted-message container shows the visible report title or a legacy
-idempotency key, and keeps all freshness, read-back, and post-verification
+idempotency key, and keeps all freshness, empty-composer, and post-verification
 guards:
 
 ```sh
@@ -677,14 +679,20 @@ single-attempt state and a run lock around the single-shot
   computed by the report's own date rule from the run's clock (at 10:00 JST
   = 01:00 UTC, that is yesterday). If
   `<state-dir>/records/<date>.json` marks the date `posted`, the run does
-  nothing (`already-posted`); if it marks the date `attempted`, the run does
-  nothing (`already-attempted`, exit 1). Both skip querying and browser work.
+  nothing (`already-posted`); if it marks the date `posted_unverified` or
+  `attempted`, the run does nothing (`already-posted-unverified` or
+  `already-attempted`, exit 1). All recorded dates skip queries and browser
+  work.
   Immediately before the send click, an atomic, fsynced `attempted` record is
   written. It becomes `posted` only after the workflow verifies the exact
-  message and emoji identities. Any outcome after that marker that is not
-  verified (`unverified`, transport error, or interruption) stays attempted
-  and is never retried automatically; a human must inspect the channel before
-  deciding what to do. Failures before the marker leave no attempt record.
+  message text and emoji identities. If a caller-supplied marker is visible
+  in posted messages after the click but text or emoji verification fails, the
+  wrapper records `posted_unverified` and reports the diagnostic; it never
+  deletes or resends that message. If no post
+  can be found, or the send outcome is uncertain (transport error or
+  interruption), the record stays `attempted`. Neither state is retried
+  automatically; a human must inspect the channel before deciding what to do.
+  Failures before the marker leave no attempt record.
   Duplicate detection searches posted message containers, not composer drafts;
   `duplicate_post` is not success and writes no attempt marker because no send
   click was reached. A corrupt, unreadable, or mismatched record fails closed.
@@ -698,7 +706,7 @@ single-attempt state and a run lock around the single-shot
   treated as live: its creator may still be writing it.
 
 Unattended logs stay clean: the printed payload carries statuses, error
-codes, and closed-set diagnostic labels only - never report numbers, the
+codes, and closed-set verification labels only - never report numbers, the
 message text, the destination name, or any key - and the report's own stdout
 and stderr are captured and dropped. Debugging runs `jev-cu-report` directly,
 by a person.
@@ -725,29 +733,30 @@ stored.
 ### Output
 
 One JSON object on stdout: `tool` (`jev-cu-daily`), `version`, `status`,
-`mode` (`send` or `dry-run`), `targetDate`, `attempts` (zero or one diagnostic note: `attempt`, report `status`,
-`refusalCode`, `errorCode`, `completed`, `stage`, `check`, `emojiIdentity`,
-and `verification`; codes and closed-set labels only), and `record`. A record
-is either an `attempted` marker (`date`, `status: "attempted"`, `attemptedAt`,
-`attempts: 1`) or a verified `posted` record (`date`, `status: "posted"`,
-`postedAt`, `attempts`, `recordedAt`; new records store `attempts: 1`, while
-an existing record may be from an older version). `status` is one of `posted`,
-`already-posted`, `already-attempted`, `skipped-locked`, `dry-run`, `uncertain`,
-or `failed`. A usage error adds `error.code: "usage"`.
+`mode` (`send` or `dry-run`), `targetDate`, `attempts` (zero or one diagnostic
+note: `attempt`, report `status`, `refusalCode`, `errorCode`, `completed`,
+`emojiIdentity`, and `verification`; codes and closed-set labels only), and
+`record`. A record is an `attempted` marker (`date`, `status: "attempted"`,
+`attemptedAt`, `attempts: 1`), a `posted` record (`date`, `status: "posted"`,
+`postedAt`, `attempts`, `recordedAt`), or a `posted_unverified` record (`date`,
+`status: "posted_unverified"`, `attemptedAt`, `attempts: 1`, `recordedAt`, and
+closed-set mismatch diagnostic). `status` is one of `posted`,
+`posted_unverified`, `already-posted`, `already-posted-unverified`,
+`already-attempted`, `skipped-locked`, `dry-run`, `uncertain`, or `failed`. A
+usage error adds `error.code: "usage"`.
 `completed` is the workflow's last completed stage (`navigate`, `draft`,
-`send`, or null). For a `text_mismatch` refusal, `stage` says where it
-happened (`draft_precheck`, `draft_readback`, `send_precheck`, or `send_gate`)
-and `check` is one of `not_empty`, `not_observable`, `not_describable`,
-`unresolved_inline`, `ax_value_differs`, `ax_dom_disagree`,
-`inline_text_differs`, or `emoji_identity_contradicted`. Absent labels are null;
-unrecognized labels become `other`, never page text. Post verification reports
+`send`, or null). Refusals report their code, including `composer_not_empty`
+when the selected composer contains a draft. Post verification reports
 `emojiIdentity` (`proven`, `unproven`, `contradicted`, `not_applicable`, or
 `not_verified`) and `verification` (`verified`, `emoji_identity_unproven`,
 `emoji_identity_contradicted`, `text_mismatch`, `text_not_exposed`, or
-`not_found`) when present.
+`not_found`) when present. Only mismatch diagnostics are stored with a
+`posted_unverified` record and prevent another attempt for the date; `not_found`
+leaves an `attempted` record and reports `uncertain`.
 
 Exit codes: `0` for posted, already-posted, skipped-locked, and dry-run; `1`
-for already-attempted, uncertain, or failed; `2` for usage errors. `--help`
+for posted_unverified, already-posted-unverified, already-attempted, uncertain,
+or failed; `2` for usage errors. `--help`
 prints usage on stderr and exits 0.
 
 ### Deployment (systemd)
@@ -779,8 +788,9 @@ operation; none of it is automated by this repository):
 
 `npm test` covers the wrapper end to end offline: the fixture executor and
 the fake CDP session over the synthetic page (verified post, attempt marker,
-second-run skip, duplicate refusal, uncertain no-resend, composer latch, and
-concurrent runs under the real lock), the state machinery against a temporary directory
+second-run skip, duplicate refusal, uncertain no-resend, posted_unverified
+no-resend, non-empty composer refusal, and concurrent runs under the real lock),
+the state machinery against a temporary directory
 (atomic records, corrupt-record failure, boot-id/pid/age staleness), and the
 CLI contract including `--help` and usage errors through the committed bin.
 No network, no Slack, no secrets.

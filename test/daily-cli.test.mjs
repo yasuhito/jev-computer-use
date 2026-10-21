@@ -121,6 +121,36 @@ test("the daily CLI posts once, records the date, and prints a scrubbed payload"
   }
 });
 
+test("the attempted record precedes the send click and is posted only after verification", async () => {
+  /** @type {Record<string, unknown>|null} */
+  let markerAtSendClick = null;
+  const c = await captureIo({
+    connect: async () => {
+      const fake = createDailyFakeCdp();
+      const send = fake.session.send.bind(fake.session);
+      fake.session.send = async (method, params = {}) => {
+        if (method === "Input.dispatchMouseEvent" && params.type === "mouseReleased" && fake.clicks().length === 2) {
+          markerAtSendClick = JSON.parse(await readFile(c.recordPath, "utf8"));
+        }
+        return send(method, params);
+      };
+      c.sessions.push(fake);
+      return fake.session;
+    },
+  });
+  try {
+    const { code, payload } = await runDailyJob(c.io);
+    assert.equal(code, 0);
+    assert.equal(payload?.status, "posted");
+    const attemptedAtClick = /** @type {Record<string, unknown>|null} */ (/** @type {unknown} */ (markerAtSendClick));
+    assert.equal(attemptedAtClick?.status, "attempted");
+    assert.equal(JSON.parse(await readFile(c.recordPath, "utf8")).status, "posted");
+    assert.equal(c.sessions[0]?.clicks().length, 3);
+  } finally {
+    await c.cleanup();
+  }
+});
+
 test("a second run for the same date posts nothing and queries nothing", async () => {
   const c = await captureIo();
   try {
@@ -273,21 +303,76 @@ test("an uncertain send leaves the composer draft untouched and blocks reruns", 
   }
 });
 
-test("a composer refusal before the send boundary retains closed-set diagnostics and no marker", async () => {
+test("a post-send mismatch is recorded as posted_unverified and never sent twice", async () => {
   const c = await captureIo({
     connect: async () => {
       const fake = createDailyFakeCdp();
-      const send = fake.session.send.bind(fake.session);
-      let inserted = false;
-      let treeReads = 0;
-      fake.session.send = async (method, params = {}) => {
-        const result = await send(method, params);
-        if (method === "Input.insertText") inserted = true;
-        if (inserted && method === "DOM.describeNode" && params.depth === -1 && ++treeReads === 1) {
-          fake.state.emojiAttributes = () => ({ class: "unrecognized-inline", alt: "", src: "/static/blank.png" });
-        }
-        return result;
-      };
+      fake.state.transformDraft = (draft) => `${draft} altered by page`;
+      c.sessions.push(fake);
+      return fake.session;
+    },
+  });
+  try {
+    const first = await runDailyJob(c.io);
+    const fake = c.sessions[0];
+    assert.ok(fake);
+    assert.equal(first.code, 1);
+    assert.equal(first.payload?.status, "posted_unverified");
+    assert.equal(first.payload?.record?.status, "posted_unverified");
+    assert.deepEqual(first.payload?.attempts.map((a) => [a.status, a.completed, a.emojiIdentity, a.verification]), [
+      ["unverified", "send", "not_verified", "text_mismatch"],
+    ]);
+    const record = JSON.parse(await readFile(c.recordPath, "utf8"));
+    assert.equal(record.status, "posted_unverified");
+    assert.deepEqual(record.diagnostic, { emojiIdentity: "not_verified", verification: "text_mismatch" });
+    assert.equal(fake.clicks().length, 3);
+    assert.equal(fake.currentMessages().length, 1);
+    assert.match(fake.currentMessages()[0] ?? "", /altered by page$/);
+    const sessions = c.sessions.length;
+    const queries = c.executor.calls.length;
+    const second = await runDailyJob(c.io);
+    assert.equal(second.code, 1);
+    assert.equal(second.payload?.status, "already-posted-unverified");
+    assert.equal(c.sessions.length, sessions);
+    assert.equal(c.executor.calls.length, queries);
+    assert.equal(fake.clicks().length, 3);
+    assert.equal(fake.currentMessages().length, 1);
+  } finally {
+    await c.cleanup();
+  }
+});
+
+test("a verified post whose composer keeps text is recorded as posted", async () => {
+  const c = await captureIo({
+    connect: async () => {
+      const fake = createDailyFakeCdp();
+      fake.state.clearedDraft = "retained by page";
+      c.sessions.push(fake);
+      return fake.session;
+    },
+  });
+  try {
+    const { code, payload } = await runDailyJob(c.io);
+    assert.equal(code, 0);
+    assert.equal(payload?.status, "posted");
+    assert.equal(payload?.record?.status, "posted");
+    const onDisk = JSON.parse(await readFile(c.recordPath, "utf8"));
+    assert.equal(onDisk.status, "posted");
+    const fake = c.sessions[0];
+    assert.ok(fake);
+    assert.equal(fake.clicks().length, 3);
+    assert.equal(fake.currentMessages().length, 1);
+    assert.equal(fake.currentDraft(), "retained by page");
+  } finally {
+    await c.cleanup();
+  }
+});
+
+test("a non-empty composer refuses clearly and is left untouched before any attempt marker", async () => {
+  const c = await captureIo({
+    connect: async () => {
+      const fake = createDailyFakeCdp();
+      fake.state.drafts.set("/client/T0SYNTH/C0QA2", "leftover draft");
       c.sessions.push(fake);
       return fake.session;
     },
@@ -297,16 +382,16 @@ test("a composer refusal before the send boundary retains closed-set diagnostics
     assert.equal(code, 1);
     assert.equal(payload?.status, "failed");
     assert.equal(payload?.record, null);
-    assert.deepEqual(payload?.attempts.map((a) => [a.status, a.refusalCode, a.completed, a.stage, a.check]), [
-      ["refused", "text_mismatch", "draft", "send_precheck", "unresolved_inline"],
+    assert.deepEqual(payload?.attempts.map((a) => [a.status, a.refusalCode, a.completed]), [
+      ["refused", "composer_not_empty", "navigate"],
     ]);
     const fake = c.sessions[0];
     assert.ok(fake);
-    assert.equal(fake.clicks().length, 2, "destination and composer focus only; no send click");
-    assert.equal(fake.currentMessages().length, 0);
-    assert.match(fake.currentDraft(), /^QA² 新規ユーザー｜9\/20（UTC）\n👤 /);
+    assert.equal(fake.clicks().length, 1, "only the destination click occurred");
+    assert.equal(fake.methodCalls("Input.insertText").length, 0);
+    assert.equal(fake.currentDraft(), "leftover draft");
     await assert.rejects(readFile(c.recordPath), { code: "ENOENT" });
-    assert.doesNotMatch(JSON.stringify(payload), /新規ユーザー|👤|人|#qa2|qa2|idempotency/);
+    assert.doesNotMatch(JSON.stringify(payload), /leftover draft|新規ユーザー|👤|人|#qa2|qa2|idempotency/);
   } finally {
     await c.cleanup();
   }
