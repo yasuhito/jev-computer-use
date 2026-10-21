@@ -364,7 +364,13 @@ confidence, and probabilities), every action (`phase: "act"`, with the click
 point, URLs, and inserted text length), the post verification, and in dry-run a
 `plan`. The `posted` step's `postEvidence` is true when text verification
 succeeds or, after an unverified send, a caller-supplied duplicate marker is
-visible in a posted-message container. `jev-cu-daily` uses that evidence to
+visible in a posted-message container. After an unverified send, its
+`count`, `emojiIdentity`, and `verification` describe only the posted-message
+containers holding that marker, never an older message; without a visible
+marker they are `0`, `not_verified`, and `not_found`. `composerCleared` reports
+whether the composer was observed empty after the send; it never gates post
+verification, so a verified post with a retained draft is `executed` with
+`composerCleared: false`. `jev-cu-daily` uses that evidence to
 record visible mismatches as `posted_unverified` while leaving an unlocated
 post as `uncertain`.
 When the page was already exactly at the destination, the destination step is

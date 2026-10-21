@@ -978,7 +978,9 @@ export class CdpAdapter {
    * windows that contain it, never its whole container.
    * For expected emoji, a profile with typed inline hooks validates the DOM
    * sequence even when accessibility text matches, so post verification
-   * requires proven identities at exact positions. `scope: "messages"`
+   * requires proven identities at exact positions. `containers` restricts
+   * `sequence` to the profile-declared containers with those backend node
+   * ids, so a diagnostic describes only those messages. `scope: "messages"`
    * restricts containment checks to profile-declared message containers,
    * never composer text.
    *
@@ -986,10 +988,10 @@ export class CdpAdapter {
    * duplicate-marker guard uses it only within message containers.
    *
    * @param {string} text
-   * @param {{match?: "exact"|"contains"|"sequence", scope?: "all"|"messages"}} [options]
+   * @param {{match?: "exact"|"contains"|"sequence", scope?: "all"|"messages", containers?: number[]|null}} [options]
    * @returns {Promise<{count: number, backendNodeIds: number[], emojiIdentity?: "proven"|"unproven"|"contradicted"|"not_applicable"|"not_verified", verification?: string}>}
    */
-  async findText(text, { match = "exact", scope = "all" } = {}) {
+  async findText(text, { match = "exact", scope = "all", containers = null } = {}) {
     await this.#ensureEnabled();
     const wanted = sanitizeLabel(text, MAX_VALUE_LENGTH);
     if (wanted.length === 0) return { count: 0, backendNodeIds: [] };
@@ -1082,7 +1084,9 @@ export class CdpAdapter {
         return lines;
       };
       const containerRoles = this.#profile.textSequenceContainerRoles ?? new Set();
-      const candidates = raws
+      const within = containers === null ? null : new Set(containers);
+      const scoped = within === null ? raws : raws.filter((raw) => within.has(raw?.backendDOMNodeId));
+      const candidates = scoped
         .filter((raw) => containerRoles.has(typeof raw?.role?.value === "string" ? raw.role.value.toLowerCase() : ""))
         .map((raw) => subtreeLines(raw));
       /** @type {Set<number>} */
@@ -1104,7 +1108,7 @@ export class CdpAdapter {
         // Even an accessibility-tree match cannot establish an image's Slack
         // identity. Validate the message DOM whenever this profile has typed
         // inline semantics, whether or not the AX sequence matched.
-        const result = await this.#sequenceInInlineContent(raws, byId, containerRoles, expected, classify, tokenizer);
+        const result = await this.#sequenceInInlineContent(scoped, byId, containerRoles, expected, classify, tokenizer);
         return { count: result.backendNodeIds.length, backendNodeIds: result.backendNodeIds, emojiIdentity: result.emojiIdentity, verification: result.verification };
       }
       if (backendNodeIds.length > 0) {
@@ -1112,7 +1116,7 @@ export class CdpAdapter {
       }
       const resolve = this.#profile.inlineText;
       if (resolve !== undefined && !text.includes(UNRESOLVED_INLINE)) {
-        for (const id of await this.#sequenceInProvenInlineText(raws, byId, containerRoles, expected, resolve)) hit.add(id);
+        for (const id of await this.#sequenceInProvenInlineText(scoped, byId, containerRoles, expected, resolve)) hit.add(id);
       }
       const fallbackIds = [...hit];
       return { count: fallbackIds.length, backendNodeIds: fallbackIds, emojiIdentity: expectedHasEmoji ? (fallbackIds.length > 0 ? "proven" : "not_verified") : "not_applicable", verification: fallbackIds.length > 0 ? "verified" : "not_found" };

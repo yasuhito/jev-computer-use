@@ -365,24 +365,28 @@ test("send mode verifies the post when the cleared composer keeps the blank edit
   assert.equal(report.status, "executed");
   assert.equal(report.completed, "send");
   assert.deepEqual(env.fake.currentMessages(), [TEXT]);
-  const posted = /** @type {{verified: boolean, url: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  const posted = /** @type {{verified: boolean, composerCleared: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
   assert.ok(posted);
   assert.equal(posted.verified, true);
+  assert.equal(posted.composerCleared, true);
   assert.equal(env.fake.currentDraft(), "\n");
 });
 
-test("send mode reports unverified without deleting or resending when the composer is not cleared after send", async () => {
-  // Post verification requires the send to have been accepted: the composer
-  // must be empty again. Its contents are never compared with the caller text.
+test("send mode reports a verified post with composerCleared false when the composer keeps text after send", async () => {
+  // Composer emptiness is observed after the send but never gates the post
+  // verification, and its contents are never compared with the caller text.
   const env = setup();
   env.fake.state.clearedDraft = `${TEXT} retained by page`;
   const report = await run(env, { mode: "send", text: TEXT });
-  assert.equal(report.status, "unverified");
+  assert.equal(report.status, "executed");
   assert.equal(report.completed, "send");
   assert.deepEqual(env.fake.currentMessages(), [TEXT]);
-  const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  const posted = /** @type {{verified: boolean, postEvidence: boolean, composerCleared: boolean, verification: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
   assert.ok(posted);
-  assert.equal(posted.verified, false);
+  assert.equal(posted.verified, true);
+  assert.equal(posted.postEvidence, true);
+  assert.equal(posted.composerCleared, false);
+  assert.equal(posted.verification, "verified");
   assert.equal(env.fake.clicks().length, 3);
   assert.equal(env.fake.currentDraft(), `${TEXT} retained by page`);
 });
@@ -672,6 +676,30 @@ test("the five-line emoji report posts once to the qa2 channel on the real-shape
   assert.equal(report.status, "executed");
   assert.deepEqual(env.fake.currentMessages(), [EMOJI_REPORT]);
   assert.equal(env.fake.currentUrl(), TREE_QA2);
+  const posted = /** @type {{verified: boolean, composerCleared: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, true);
+  assert.equal(posted?.composerCleared, true);
+});
+
+test("a post mismatch is described by today's marked message, not by yesterday's report", async () => {
+  // Yesterday's report precedes today's in the channel and fails the
+  // comparison first with a contradicted emoji; today's post carries the
+  // run's title marker and only its text was altered by the page.
+  const env = setup({ ...treeShape(), splitMessages: true });
+  const yesterday = EMOJI_REPORT.replaceAll("9/24", "9/23").replace("👤", "📅");
+  env.fake.state.messages.set(new URL(TREE_QA2).pathname, [yesterday]);
+  env.fake.state.transformPosted = (draft) => draft.replace("1,234人（前日", "1,235人（前日");
+  const report = await run(env, { mode: "send", destination: "qa2", text: EMOJI_REPORT, decide: decideByLabel(TREE_FLOW), exactDestination: true, duplicateMarker: EMOJI_MARKERS });
+  assert.equal(report.status, "unverified");
+  assert.equal(report.completed, "send");
+  assert.equal(env.fake.clicks().length, 3);
+  assert.deepEqual(env.fake.currentMessages(), [yesterday, EMOJI_REPORT.replace("1,234人（前日", "1,235人（前日")]);
+  const posted = /** @type {{verified: boolean, postEvidence: boolean, composerCleared: boolean, emojiIdentity: string, verification: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.equal(posted?.verified, false);
+  assert.equal(posted?.postEvidence, true);
+  assert.equal(posted?.composerCleared, true);
+  assert.equal(posted?.verification, "text_mismatch");
+  assert.equal(posted?.emojiIdentity, "not_verified");
 });
 
 test("without post emoji proof, the message is sent once and reported unverified", async () => {

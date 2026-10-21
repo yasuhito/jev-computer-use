@@ -460,42 +460,48 @@ export async function runWorkflow({
     report.completed = "send";
 
     // ---- verify the post ----
-    const postCheck = /** @type {{value: {count: number, emojiIdentity?: string, verification?: string}|null}} */ ({ value: null });
+    const postCheck = /** @type {{value: {count: number, backendNodeIds: number[], emojiIdentity?: string, verification?: string}|null}} */ ({ value: null });
+    let composerCleared = false;
     const posted = await adapter.waitFor(async (snapshot) => {
       if (!urlReached(snapshot.target.url, destinationUrl)) return false;
       const composerNow = snapshot.candidates.find((c) => c.backendNodeId === composer.backendNodeId);
       // The same emptiness classification as insertText's precheck: a page
       // whose cleared composer keeps the exact single-U+000A blank editor
       // artifact counts as empty; every other nonempty value is a draft.
-      if (!composerNow || !editorValueIsEmpty(composerNow.value)) return false;
-      // Verify only the posted message, not composer contents. Require exact
-      // paragraph order in one profile-declared message container, with
-      // proven emoji identities and exposed non-emoji text.
+      // Emptiness is observed, never compared with the caller text, and does
+      // not gate the post verification.
+      composerCleared = composerNow !== undefined && editorValueIsEmpty(composerNow.value);
+      // Require exact paragraph order in one profile-declared message
+      // container, with proven emoji identities and exposed non-emoji text.
       postCheck.value = await adapter.findText(text, { match: "sequence" });
       return postCheck.value.count > 0 && postCheck.value.verification === "verified";
     });
-    let postEvidence = posted.ok;
-    if (!postEvidence) {
+    // A failed verification is described only by the message containers that
+    // hold this run's duplicate marker, never by an older message.
+    let evidence = posted.ok ? postCheck.value : null;
+    if (evidence === null) {
       for (const marker of duplicateMarkers) {
         const markerMatch = await adapter.findText(marker, { match: "contains", scope: "messages" });
         if (markerMatch.count > 0) {
-          postEvidence = true;
+          evidence = await adapter.findText(text, { match: "sequence", containers: markerMatch.backendNodeIds });
           break;
         }
       }
     }
-    const verification = postCheck.value?.verification ?? "not_found";
+    const verified = evidence !== null && evidence.count > 0 && evidence.verification === "verified";
+    const verification = evidence?.verification ?? "not_found";
     report.steps.push({
       step: "posted",
       phase: "verify",
-      verified: posted.ok,
-      postEvidence,
+      verified,
+      postEvidence: evidence !== null,
+      composerCleared,
       url: posted.snapshot.target.url,
-      count: postCheck.value?.count ?? 0,
-      emojiIdentity: postCheck.value?.emojiIdentity ?? "not_verified",
-      verification: postEvidence && verification === "not_found" ? "text_mismatch" : verification,
+      count: evidence?.count ?? 0,
+      emojiIdentity: evidence?.emojiIdentity ?? "not_verified",
+      verification: evidence !== null && verification === "not_found" ? "text_mismatch" : verification,
     });
-    report.status = posted.ok ? "executed" : "unverified";
+    report.status = verified ? "executed" : "unverified";
     return report;
   } catch (err) {
     if (err instanceof RefusalError) {

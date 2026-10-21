@@ -342,6 +342,32 @@ test("a post-send mismatch is recorded as posted_unverified and never sent twice
   }
 });
 
+test("a verified post whose composer keeps text is recorded as posted", async () => {
+  const c = await captureIo({
+    connect: async () => {
+      const fake = createDailyFakeCdp();
+      fake.state.clearedDraft = "retained by page";
+      c.sessions.push(fake);
+      return fake.session;
+    },
+  });
+  try {
+    const { code, payload } = await runDailyJob(c.io);
+    assert.equal(code, 0);
+    assert.equal(payload?.status, "posted");
+    assert.equal(payload?.record?.status, "posted");
+    const onDisk = JSON.parse(await readFile(c.recordPath, "utf8"));
+    assert.equal(onDisk.status, "posted");
+    const fake = c.sessions[0];
+    assert.ok(fake);
+    assert.equal(fake.clicks().length, 3);
+    assert.equal(fake.currentMessages().length, 1);
+    assert.equal(fake.currentDraft(), "retained by page");
+  } finally {
+    await c.cleanup();
+  }
+});
+
 test("a non-empty composer refuses clearly and is left untouched before any attempt marker", async () => {
   const c = await captureIo({
     connect: async () => {
