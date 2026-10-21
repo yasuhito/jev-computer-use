@@ -356,10 +356,11 @@ test("send mode reports unverified when the page swallows the send", async () =>
   assert.equal(env.fake.clicks().length, 3);
 });
 
-test("send mode verifies posted content even when the composer retains text", async () => {
-  // Post verification is based on the message, not a composer comparison.
+test("send mode verifies the post when the cleared composer keeps the blank editor artifact", async () => {
+  // A cleared composer that keeps the single blank editor line
+  // (Chromium: U+000A) counts as empty, so the post is still verified.
   const env = setup();
-  env.fake.state.clearedDraft = `${TEXT} retained by page`;
+  env.fake.state.clearedDraft = "\n";
   const report = await run(env, { mode: "send", text: TEXT });
   assert.equal(report.status, "executed");
   assert.equal(report.completed, "send");
@@ -367,6 +368,22 @@ test("send mode verifies posted content even when the composer retains text", as
   const posted = /** @type {{verified: boolean, url: string}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
   assert.ok(posted);
   assert.equal(posted.verified, true);
+  assert.equal(env.fake.currentDraft(), "\n");
+});
+
+test("send mode reports unverified without deleting or resending when the composer is not cleared after send", async () => {
+  // Post verification requires the send to have been accepted: the composer
+  // must be empty again. Its contents are never compared with the caller text.
+  const env = setup();
+  env.fake.state.clearedDraft = `${TEXT} retained by page`;
+  const report = await run(env, { mode: "send", text: TEXT });
+  assert.equal(report.status, "unverified");
+  assert.equal(report.completed, "send");
+  assert.deepEqual(env.fake.currentMessages(), [TEXT]);
+  const posted = /** @type {{verified: boolean}|undefined} */ (report.steps.find((s) => /** @type {{step: string}} */ (s).step === "posted"));
+  assert.ok(posted);
+  assert.equal(posted.verified, false);
+  assert.equal(env.fake.clicks().length, 3);
   assert.equal(env.fake.currentDraft(), `${TEXT} retained by page`);
 });
 

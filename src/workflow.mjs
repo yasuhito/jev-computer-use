@@ -19,7 +19,7 @@ import { validateRequest, ValidationError, isPlainObject } from "./validate.mjs"
 import { buildRequest, runDecision } from "./decide.mjs";
 import { applyPolicy } from "./policy.mjs";
 import { RefusalError } from "./errors.mjs";
-import { urlReached, sameUrl, assertFreshCandidate } from "./cdp/adapter.mjs";
+import { urlReached, sameUrl, assertFreshCandidate, editorValueIsEmpty } from "./cdp/adapter.mjs";
 
 /** @typedef {import("./cdp/adapter.mjs").CdpAdapter} CdpAdapter */
 /** @typedef {import("./cdp/adapter.mjs").Snapshot} Snapshot */
@@ -463,6 +463,11 @@ export async function runWorkflow({
     const postCheck = /** @type {{value: {count: number, emojiIdentity?: string, verification?: string}|null}} */ ({ value: null });
     const posted = await adapter.waitFor(async (snapshot) => {
       if (!urlReached(snapshot.target.url, destinationUrl)) return false;
+      const composerNow = snapshot.candidates.find((c) => c.backendNodeId === composer.backendNodeId);
+      // The same emptiness classification as insertText's precheck: a page
+      // whose cleared composer keeps the exact single-U+000A blank editor
+      // artifact counts as empty; every other nonempty value is a draft.
+      if (!composerNow || !editorValueIsEmpty(composerNow.value)) return false;
       // Verify only the posted message, not composer contents. Require exact
       // paragraph order in one profile-declared message container, with
       // proven emoji identities and exposed non-emoji text.
