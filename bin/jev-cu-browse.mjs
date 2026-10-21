@@ -51,7 +51,7 @@ Modes (--mode, default dry-run):
   observe    snapshot the recognized candidates; no model call, no action
   dry-run    decide the destination (and composer/send if visible); no action
   navigate   click the selected destination and verify the URL
-  draft      navigate, then insert --text and verify the read-back; never sends
+  draft      navigate, refuse a non-empty composer, then insert --text; never sends
   send       draft, then click the send control and verify the post
 
 Options:
